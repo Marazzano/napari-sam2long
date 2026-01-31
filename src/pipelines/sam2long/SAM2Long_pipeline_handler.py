@@ -186,8 +186,58 @@ class SAM2Long_pipeline(QWidget):
     # ========================================================================
 
     def approve_frame(self, t: int):
-        """Mark a frame as approved/anchor for propagation."""
-        self.approved_frames.add(int(t))
+        """Bake the point-refined mask into a permanent anchor.
+
+        Steps:
+        1. Get current mask from label layer (the preview from point prompts)
+        2. Convert to binary mask per object
+        3. Call add_new_mask() to commit as permanent anchor
+        4. Clear points (now redundant - the mask is the anchor)
+        """
+        frame_idx = int(t)
+        layer_name = self.mwo.output_layers_combo.currentText()
+        layer = self.viewer.layers[layer_name]
+
+        # Get all objects that have been prompted on this frame
+        point_inputs = self.inference_state.get("point_inputs_per_obj", {})
+
+        baked_objects = []
+        for obj_id in list(point_inputs.keys()):
+            if frame_idx not in point_inputs.get(obj_id, {}):
+                continue
+            if point_inputs[obj_id].get(frame_idx) is None:
+                continue
+
+            # Get the current mask from the label layer (the preview)
+            mask_2d = layer.data[frame_idx]
+            binary_mask = (mask_2d == obj_id).astype(np.float32)
+
+            if binary_mask.sum() == 0:
+                continue  # No mask to bake
+
+            # COMMIT: Bake mask into predictor as permanent anchor
+            self.predictor.add_new_mask(
+                inference_state=self.inference_state,
+                frame_idx=frame_idx,
+                obj_id=int(obj_id),
+                mask=binary_mask,
+            )
+
+            # Clear points for this object (now redundant)
+            point_inputs[obj_id].pop(frame_idx, None)
+
+            # Clear from self.prompts too
+            if obj_id in self.prompts:
+                self.prompts[obj_id] = [
+                    p for p in self.prompts[obj_id] if p[0] != frame_idx
+                ]
+
+            baked_objects.append(obj_id)
+
+        # Mark frame as approved
+        self.approved_frames.add(frame_idx)
+
+        return baked_objects  # Return list of baked objects for UI feedback
 
     def unapprove_frame(self, t: int):
         """Remove a frame from the approved set."""
@@ -231,70 +281,72 @@ class SAM2Long_pipeline(QWidget):
     # ========================================================================
 
     def add_point(self, point_array, label_id, neg_or_pos=1):
+        """Add a point prompt for iterative mask refinement.
+
+        Points accumulate within the same (object, frame) for iterative refinement.
+        Coordinates are stored as (y, x) internally, converted to SAM's (x, y) at call site.
+
+        Args:
+            point_array: [frame_idx, y, x] coordinates
+            label_id: Object/label ID to segment
+            neg_or_pos: 1 for positive (include), 0 for negative (exclude)
+        """
         ann_frame_idx = point_array[0]
         ann_obj_id = label_id
-        new_point = [point_array[2], point_array[1]]
+        # Store as (y, x) internally - convert to SAM's (x, y) only at call site
+        new_point_yx = (point_array[1], point_array[2])  # y, x
         new_label = neg_or_pos
-        check_if_our_z_is_new = True
-        check_if_our_annotation_is_new = True
 
-        # Check if in dict else add it
+        # Check if predictor already has points for this (obj, frame)
+        # This is the ROBUST way - handles frame 10 → 15 → back to 10
+        point_inputs = self.inference_state.get("point_inputs_per_obj", {})
+        has_existing = (
+            ann_obj_id in point_inputs
+            and ann_frame_idx in point_inputs.get(ann_obj_id, {})
+            and point_inputs[ann_obj_id].get(ann_frame_idx) is not None
+        )
+        clear_old = not has_existing
 
-        # Object has been annotated before
+        # Store in self.prompts for UI bookkeeping only (not for propagation)
+        new_point_xy = [new_point_yx[1], new_point_yx[0]]  # x, y for storage
         if ann_obj_id in self.prompts:
-            all_list = []
+            found_frame = False
             for existing_list in self.prompts[ann_obj_id]:
-
-                # this frame has been annotated/prompted before
                 if existing_list[0] == ann_frame_idx:
-                    points = existing_list[1]
-                    labels = list(existing_list[2])
-                    points = np.append(points, [new_point], axis=0)
-                    labels.append(new_label)
-                    new_list = [
-                        ann_frame_idx,
-                        points,
-                        np.array(labels, np.int32),
-                    ]
-                    all_list.append(new_list)
-                    check_if_our_z_is_new = False
-                # frame has not been annotated before
-                else:
-                    all_list.append(existing_list)
-
-            self.prompts[ann_obj_id] = all_list
-            check_if_our_annotation_is_new = False
-
-        # Object has NOT been annotated before
+                    # Append to existing frame's points
+                    existing_list[1] = np.append(existing_list[1], [new_point_xy], axis=0)
+                    existing_list[2] = np.append(existing_list[2], [new_label])
+                    found_frame = True
+                    break
+            if not found_frame:
+                # New frame for this object
+                points = np.array([new_point_xy], dtype=np.float32)
+                labels = np.array([new_label], np.int32)
+                self.prompts[ann_obj_id].append([ann_frame_idx, points, labels])
         else:
-            points = np.array(
-                [[point_array[2], point_array[1]]], dtype=np.float32
-            )
-            labels = np.array([neg_or_pos], np.int32)
+            # New object
+            points = np.array([new_point_xy], dtype=np.float32)
+            labels = np.array([new_label], np.int32)
             self.prompts[ann_obj_id] = [[ann_frame_idx, points, labels]]
 
-        # Object has been annotated but not in this frame
-        if check_if_our_z_is_new and not (check_if_our_annotation_is_new):
-            points = np.array(
-                [[point_array[2], point_array[1]]], dtype=np.float32
-            )
-            labels = np.array([neg_or_pos], np.int32)
-            existing_val = self.prompts[ann_obj_id]
-            existing_val.append([ann_frame_idx, points, labels])
-            self.prompts[ann_obj_id] = existing_val
+        # DO NOT call reset_state() - this destroys accumulated context!
 
-        layer_name = self.mwo.output_layers_combo.currentText()
-        layer = self.viewer.layers[layer_name]
-        label_layer_data = layer.data
+        # Convert (y, x) to SAM's expected (x, y) at call site
+        points_xy = np.array([[new_point_yx[1], new_point_yx[0]]], dtype=np.float32)
 
-        self.predictor.reset_state(self.inference_state)
         _, out_obj_ids, out_mask_logits = self.predictor.add_new_points_or_box(
             inference_state=self.inference_state,
             frame_idx=ann_frame_idx,
             obj_id=ann_obj_id,
-            points=points,
-            labels=labels,
+            points=points_xy,  # (x, y) for SAM
+            labels=np.array([new_label], np.int32),
+            clear_old_points=clear_old,  # False if points already exist
         )
+
+        # Update mask preview in label layer
+        layer_name = self.mwo.output_layers_combo.currentText()
+        layer = self.viewer.layers[layer_name]
+        label_layer_data = layer.data
 
         # if image and label layer dimensions do not match, show info
         if (
@@ -317,6 +369,31 @@ class SAM2Long_pipeline(QWidget):
 
         label_layer_data[ann_frame_idx, :, :] = mask_for_this_frame
         layer.data = label_layer_data
+
+    def clear_points_for_current_object(self):
+        """Clear accumulated points for current object on current frame.
+
+        Note: This does NOT erase the mask preview from the label layer.
+        The user can manually erase if needed, or the preview remains
+        as a starting point for new prompts.
+        """
+        layer_name = self.mwo.output_layers_combo.currentText()
+        layer = self.viewer.layers[layer_name]
+        obj_id = layer.selected_label
+        frame_idx = int(self.viewer.dims.current_step[0])
+
+        # Clear from self.prompts (UI bookkeeping only)
+        if obj_id in self.prompts:
+            self.prompts[obj_id] = [
+                p for p in self.prompts[obj_id] if p[0] != frame_idx
+            ]
+
+        # Clear from predictor state (the source of truth)
+        point_inputs = self.inference_state.get("point_inputs_per_obj", {})
+        if obj_id in point_inputs:
+            point_inputs[obj_id].pop(frame_idx, None)
+
+        # DO NOT clear the label layer - user may want to keep the preview!
 
     # ========================================================================
     # Video Propagation (Multi-Anchor Multi-Label Support)

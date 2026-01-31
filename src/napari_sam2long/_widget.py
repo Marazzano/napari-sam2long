@@ -88,11 +88,16 @@ class SAM2Long(QWidget):
         button_row = QHBoxLayout()
         self.approve_btn = QPushButton("Approve Frame")
         self.approve_btn.setToolTip(
-            "Mark current frame as an anchor for propagation"
+            "Bake current mask as anchor (converts points → permanent mask)"
+        )
+        self.clear_points_btn = QPushButton("Clear Points")
+        self.clear_points_btn.setToolTip(
+            "Clear points for current label on this frame (keeps mask preview)"
         )
         self.clear_approved_btn = QPushButton("Clear Approved")
         self.clear_approved_btn.setToolTip("Clear all approved anchor frames")
         button_row.addWidget(self.approve_btn)
+        button_row.addWidget(self.clear_points_btn)
         button_row.addWidget(self.clear_approved_btn)
         anchor_layout.addLayout(button_row)
 
@@ -101,9 +106,32 @@ class SAM2Long(QWidget):
         self.approved_list_label.setWordWrap(True)
         anchor_layout.addWidget(self.approved_list_label)
 
+        # Status HUD
+        self.status_hud = QLabel("Label: - | Points: 0+ 0- | Frame: -")
+        self.status_hud.setStyleSheet("font-family: monospace; color: #888;")
+        anchor_layout.addWidget(self.status_hud)
+
+        # Point mode indicator (positive/negative)
+        self.negative_mode = False
+        self.mode_label = QLabel("Mode: + (positive)")
+        self.mode_label.setStyleSheet(
+            "font-weight: bold; color: #2a2; padding: 2px;"
+        )
+        anchor_layout.addWidget(self.mode_label)
+
         # Connect buttons
         self.approve_btn.clicked.connect(self.approve_current_frame)
+        self.clear_points_btn.clicked.connect(self.clear_current_points)
         self.clear_approved_btn.clicked.connect(self.clear_approved)
+
+        # Connect frame change to update status HUD
+        self.viewer.dims.events.current_step.connect(self.update_status_hud)
+
+        # Bind Ctrl+Space to toggle negative mode
+        @self.viewer.bind_key("Control-Space", overwrite=True)
+        def toggle_negative_mode(viewer):
+            self.negative_mode = not self.negative_mode
+            self._update_mode_label()
 
         # Insert anchor controls into the main layout
         # Find the main layout and add our container
@@ -117,12 +145,31 @@ class SAM2Long(QWidget):
             fallback_layout.addWidget(anchor_container)
 
     def approve_current_frame(self):
-        """Approve the current frame as an anchor for propagation."""
+        """Approve the current frame as an anchor for propagation.
+
+        This "bakes" the current mask preview into a permanent anchor:
+        - Converts point prompts to a committed mask
+        - Clears points (now redundant)
+        - SAM2 tracks better from baked masks than raw points
+        """
         if hasattr(self, "pipeline_object"):
             t = int(self.viewer.dims.current_step[0])
-            self.pipeline_object.approve_frame(t)
+            baked_objects = self.pipeline_object.approve_frame(t)
             self.update_approved_display()
-            show_info(f"Frame {t} approved as anchor.")
+            self.update_status_hud()
+            if baked_objects:
+                show_info(f"Frame {t} approved. Baked labels: {baked_objects}")
+            else:
+                show_info(f"Frame {t} approved as anchor.")
+        else:
+            show_info("Please initialize pipeline first.")
+
+    def clear_current_points(self):
+        """Clear points for current object on current frame."""
+        if hasattr(self, "pipeline_object"):
+            self.pipeline_object.clear_points_for_current_object()
+            self.update_status_hud()
+            show_info("Points cleared (mask preview kept).")
         else:
             show_info("Please initialize pipeline first.")
 
@@ -142,6 +189,39 @@ class SAM2Long(QWidget):
             self.approved_list_label.setText(f"Approved: {frames}")
         else:
             self.approved_list_label.setText("Approved: []")
+
+    def update_status_hud(self, event=None):
+        """Update the status HUD showing current editing state."""
+        if not hasattr(self, "pipeline_object"):
+            self.status_hud.setText("Label: - | Points: 0+ 0- | Frame: -")
+            return
+
+        frame = int(self.viewer.dims.current_step[0])
+        layer_name = self.output_layers_combo.currentText()
+        if not layer_name or layer_name not in self.viewer.layers:
+            self.status_hud.setText(f"Label: - | Points: 0+ 0- | Frame: {frame}")
+            return
+
+        layer = self.viewer.layers[layer_name]
+        label = layer.selected_label
+
+        # Count points from inference_state (source of truth)
+        point_inputs = self.pipeline_object.inference_state.get("point_inputs_per_obj", {})
+        pos_count = neg_count = 0
+        if label in point_inputs and frame in point_inputs.get(label, {}):
+            pts = point_inputs[label].get(frame)
+            if pts is not None and len(pts) > 1:
+                labels_arr = pts[1]  # (points, labels) tuple
+                if hasattr(labels_arr, '__len__'):
+                    pos_count = sum(1 for l in labels_arr if l == 1)
+                    neg_count = sum(1 for l in labels_arr if l == 0)
+
+        approved = frame in self.pipeline_object.approved_frames
+        approved_str = "Yes" if approved else "No"
+        self.status_hud.setText(
+            f"Label: {label} | Points: {pos_count}+ {neg_count}- | "
+            f"Frame: {frame} | Approved: {approved_str}"
+        )
 
     # Function to populate combo boxes based on layers
     def populate_combo_box(self, combobx, layer_type="image"):
@@ -284,48 +364,60 @@ class SAM2Long(QWidget):
                 f"Failed to download {checkpoint_name} from {url}. Error: {e}"
             )
 
+    def _update_mode_label(self):
+        """Update the mode indicator label."""
+        if self.negative_mode:
+            self.mode_label.setText("Mode: - (negative)")
+            self.mode_label.setStyleSheet(
+                "font-weight: bold; color: #c22; padding: 2px;"
+            )
+        else:
+            self.mode_label.setText("Mode: + (positive)")
+            self.mode_label.setStyleSheet(
+                "font-weight: bold; color: #2a2; padding: 2px;"
+            )
+
     def on_mouse_click(self, layer, event):
-        # Check if it is a middle mouse click event
-        if event.button == 3:  # 3 represents the middle mouse button
+        """Handle mouse clicks for point prompts.
 
-            ### Check that pipeline has been initialized
-            if not hasattr(self, "pipeline_object"):
-                show_info("Please initialize first.")
-                return
+        Keybindings:
+        - Ctrl+left-click: add point (positive or negative based on mode)
+        - Ctrl+Space: toggle between positive/negative mode
 
-            ### Check that label layer exist
-            if self.output_layers_combo.count() == 0:
-                show_info("Set output layer first.")
-                return
+        Points accumulate for iterative mask refinement.
+        """
+        # Check for left mouse button (button 1) with Ctrl modifier
+        if event.button != 1:
+            return  # Only handle left clicks
 
-            if "Control" in event.modifiers:
-                # print(f'Ctrl + Middle mouse click at {event.position}')
-                point = [
-                    int(event.position[0]),
-                    int(event.position[1]),
-                    int(event.position[2]),
-                ]
-                layer_name = self.output_layers_combo.currentText()
-                layer = self.viewer.layers[layer_name]
-                active_label = layer.selected_label
-                # Negative point
-                self.pipeline_object.add_point(
-                    point, active_label, neg_or_pos=0
-                )
-            else:
-                # print(f'Middle mouse click at {event.position}')
-                point = [
-                    int(event.position[0]),
-                    int(event.position[1]),
-                    int(event.position[2]),
-                ]
-                layer_name = self.output_layers_combo.currentText()
-                layer = self.viewer.layers[layer_name]
-                active_label = layer.selected_label
-                # positive point
-                self.pipeline_object.add_point(
-                    point, active_label, neg_or_pos=1
-                )
+        if "Control" not in event.modifiers:
+            return  # Must hold Ctrl to add points
+
+        # Check that pipeline has been initialized
+        if not hasattr(self, "pipeline_object"):
+            show_info("Please initialize first.")
+            return
+
+        # Check that label layer exists
+        if self.output_layers_combo.count() == 0:
+            show_info("Set output layer first.")
+            return
+
+        point = [
+            int(event.position[0]),
+            int(event.position[1]),
+            int(event.position[2]),
+        ]
+        layer_name = self.output_layers_combo.currentText()
+        lyr = self.viewer.layers[layer_name]
+        active_label = lyr.selected_label
+
+        # Use mode toggle to determine positive (1) or negative (0)
+        neg_or_pos = 0 if self.negative_mode else 1
+        self.pipeline_object.add_point(point, active_label, neg_or_pos=neg_or_pos)
+
+        # Update status HUD after adding point
+        self.update_status_hud()
 
     def video_propagate(self):
         if self.image_layers_combo.count() == 0:
