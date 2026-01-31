@@ -95,22 +95,26 @@ class SAM2Long(QWidget):
         anchor_layout = QVBoxLayout(anchor_container)
         anchor_layout.setContentsMargins(0, 5, 0, 5)
 
-        # Button row
-        button_row = QHBoxLayout()
+        # Button row 1: Approve/Unapprove
+        button_row1 = QHBoxLayout()
         self.approve_btn = QPushButton("Approve Frame")
         self.approve_btn.setToolTip(
-            "Bake current mask as anchor (converts points → permanent mask)"
+            "Mark current frame as anchor for propagation"
         )
-        self.clear_points_btn = QPushButton("Clear Points")
-        self.clear_points_btn.setToolTip(
-            "Clear points for current label on this frame (keeps mask preview)"
+        self.unapprove_btn = QPushButton("Unapprove Frame")
+        self.unapprove_btn.setToolTip(
+            "Remove current frame from approved anchors"
         )
-        self.clear_approved_btn = QPushButton("Clear Approved")
+        button_row1.addWidget(self.approve_btn)
+        button_row1.addWidget(self.unapprove_btn)
+        anchor_layout.addLayout(button_row1)
+
+        # Button row 2: Clear all
+        button_row2 = QHBoxLayout()
+        self.clear_approved_btn = QPushButton("Clear All Approved")
         self.clear_approved_btn.setToolTip("Clear all approved anchor frames")
-        button_row.addWidget(self.approve_btn)
-        button_row.addWidget(self.clear_points_btn)
-        button_row.addWidget(self.clear_approved_btn)
-        anchor_layout.addLayout(button_row)
+        button_row2.addWidget(self.clear_approved_btn)
+        anchor_layout.addLayout(button_row2)
 
         # Approved frames display
         self.approved_list_label = QLabel("Approved: []")
@@ -118,31 +122,17 @@ class SAM2Long(QWidget):
         anchor_layout.addWidget(self.approved_list_label)
 
         # Status HUD
-        self.status_hud = QLabel("Label: - | Points: 0+ 0- | Frame: -")
+        self.status_hud = QLabel("Layer: - | Label: - | Frame: -")
         self.status_hud.setStyleSheet("font-family: monospace; color: #888;")
         anchor_layout.addWidget(self.status_hud)
 
-        # Point mode indicator (positive/negative)
-        self.negative_mode = False
-        self.mode_label = QLabel("Mode: + (positive)")
-        self.mode_label.setStyleSheet(
-            "font-weight: bold; color: #2a2; padding: 2px;"
-        )
-        anchor_layout.addWidget(self.mode_label)
-
         # Connect buttons
         self.approve_btn.clicked.connect(self.approve_current_frame)
-        self.clear_points_btn.clicked.connect(self.clear_current_points)
+        self.unapprove_btn.clicked.connect(self.unapprove_current_frame)
         self.clear_approved_btn.clicked.connect(self.clear_approved)
 
         # Connect frame change to update status HUD
         self.viewer.dims.events.current_step.connect(self.update_status_hud)
-
-        # Bind Ctrl+Space to toggle negative mode
-        @self.viewer.bind_key("Control-Space", overwrite=True)
-        def toggle_negative_mode(viewer):
-            self.negative_mode = not self.negative_mode
-            self._update_mode_label()
 
         # Insert anchor controls into the main layout
         # Find the main layout and add our container
@@ -156,31 +146,33 @@ class SAM2Long(QWidget):
             fallback_layout.addWidget(anchor_container)
 
     def approve_current_frame(self):
-        """Approve the current frame as an anchor for propagation.
-
-        This "bakes" the current mask preview into a permanent anchor:
-        - Converts point prompts to a committed mask
-        - Clears points (now redundant)
-        - SAM2 tracks better from baked masks than raw points
-        """
+        """Approve the current frame as an anchor for propagation."""
         if hasattr(self, "pipeline_object"):
             t = int(self.viewer.dims.current_step[0])
-            baked_objects = self.pipeline_object.approve_frame(t)
+
+            # Check if we've hit the max anchor limit
+            if len(self.pipeline_object.approved_frames) >= 10:
+                show_info("Maximum of 10 anchor frames reached. Unapprove some frames first.")
+                return
+
+            self.pipeline_object.approve_frame(t)
             self.update_approved_display()
             self.update_status_hud()
-            if baked_objects:
-                show_info(f"Frame {t} approved. Baked labels: {baked_objects}")
-            else:
-                show_info(f"Frame {t} approved as anchor.")
+            show_info(f"Frame {t} approved as anchor.")
         else:
             show_info("Please initialize pipeline first.")
 
-    def clear_current_points(self):
-        """Clear points for current object on current frame."""
+    def unapprove_current_frame(self):
+        """Remove current frame from approved anchors."""
         if hasattr(self, "pipeline_object"):
-            self.pipeline_object.clear_points_for_current_object()
-            self.update_status_hud()
-            show_info("Points cleared (mask preview kept).")
+            t = int(self.viewer.dims.current_step[0])
+            if t in self.pipeline_object.approved_frames:
+                self.pipeline_object.unapprove_frame(t)
+                self.update_approved_display()
+                self.update_status_hud()
+                show_info(f"Frame {t} unapproved.")
+            else:
+                show_info(f"Frame {t} is not approved.")
         else:
             show_info("Please initialize pipeline first.")
 
@@ -204,7 +196,7 @@ class SAM2Long(QWidget):
     def update_status_hud(self, event=None):
         """Update the status HUD showing current editing state."""
         if not hasattr(self, "pipeline_object"):
-            self.status_hud.setText("Label: - | Points: 0+ 0- | Frame: -")
+            self.status_hud.setText("Layer: - | Label: - | Frame: -")
             return
 
         frame = int(self.viewer.dims.current_step[0])
@@ -212,28 +204,16 @@ class SAM2Long(QWidget):
         # Get currently active layer
         active_layer = self.viewer.layers.selection.active
         if not active_layer or not isinstance(active_layer, napari.layers.Labels):
-            self.status_hud.setText(f"Label: - | Points: 0+ 0- | Frame: {frame}")
+            self.status_hud.setText(f"Layer: - | Label: - | Frame: {frame}")
             return
 
         layer = active_layer
         label = layer.selected_label
 
-        # Count points from inference_state (source of truth)
-        point_inputs = self.pipeline_object.inference_state.get("point_inputs_per_obj", {})
-        pos_count = neg_count = 0
-        if label in point_inputs and frame in point_inputs.get(label, {}):
-            pts = point_inputs[label].get(frame)
-            if pts is not None and len(pts) > 1:
-                labels_arr = pts[1]  # (points, labels) tuple
-                if hasattr(labels_arr, '__len__'):
-                    pos_count = sum(1 for l in labels_arr if l == 1)
-                    neg_count = sum(1 for l in labels_arr if l == 0)
-
         approved = frame in self.pipeline_object.approved_frames
-        approved_str = "Yes" if approved else "No"
+        approved_str = "✓ APPROVED" if approved else ""
         self.status_hud.setText(
-            f"Layer: {layer.name} | Label: {label} | Points: {pos_count}+ {neg_count}- | "
-            f"Frame: {frame} | Approved: {approved_str}"
+            f"Layer: {layer.name} | Label: {label} | Frame: {frame} {approved_str}"
         )
 
     # Function to populate combo boxes based on layers
@@ -418,69 +398,12 @@ class SAM2Long(QWidget):
                 f"Failed to download {checkpoint_name} from {url}. Error: {e}"
             )
 
-    def _update_mode_label(self):
-        """Update the mode indicator label."""
-        if self.negative_mode:
-            self.mode_label.setText("Mode: - (negative)")
-            self.mode_label.setStyleSheet(
-                "font-weight: bold; color: #c22; padding: 2px;"
-            )
-        else:
-            self.mode_label.setText("Mode: + (positive)")
-            self.mode_label.setStyleSheet(
-                "font-weight: bold; color: #2a2; padding: 2px;"
-            )
-
     def on_mouse_click(self, layer, event):
-        """Handle mouse clicks for point prompts.
+        """Mouse click callback - currently unused.
 
-        Keybindings:
-        - Ctrl+left-click: add point (positive or negative based on mode)
-        - Ctrl+Space: toggle between positive/negative mode
-
-        Points accumulate for iterative mask refinement.
-        Works on whichever label layer is currently active in napari.
+        Point prompting has been removed in favor of direct mask drawing with napari tools.
         """
-        # Check for left mouse button (button 1) with Ctrl modifier
-        if event.button != 1:
-            return  # Only handle left clicks
-
-        if "Control" not in event.modifiers:
-            return  # Must hold Ctrl to add points
-
-        # Check that pipeline has been initialized
-        if not hasattr(self, "pipeline_object"):
-            show_info("Please initialize first.")
-            return
-
-        # Get currently active layer
-        active_layer = self.viewer.layers.selection.active
-        if not active_layer or not isinstance(active_layer, napari.layers.Labels):
-            show_info("Please select a label layer first.")
-            return
-
-        # Check that this layer was initialized
-        if not hasattr(self.pipeline_object, "initialized_layers"):
-            show_info("Please initialize with label layers first.")
-            return
-
-        if active_layer.name not in self.pipeline_object.initialized_layers:
-            show_info(f"Layer '{active_layer.name}' was not initialized. Please re-initialize.")
-            return
-
-        point = [
-            int(event.position[0]),
-            int(event.position[1]),
-            int(event.position[2]),
-        ]
-        active_label = active_layer.selected_label
-
-        # Use mode toggle to determine positive (1) or negative (0)
-        neg_or_pos = 0 if self.negative_mode else 1
-        self.pipeline_object.add_point(point, active_label, neg_or_pos=neg_or_pos, layer_name=active_layer.name)
-
-        # Update status HUD after adding point
-        self.update_status_hud()
+        pass  # Placeholder for future mouse interactions
 
     def video_propagate(self):
         if self.image_layers_combo.count() == 0:
