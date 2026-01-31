@@ -181,6 +181,43 @@ class SAM2Long_pipeline(QWidget):
         # Multi-anchor support: track approved frames
         self.approved_frames: set = set()
 
+        # Multi-layer support: track initialized layers and obj_id mapping
+        self.initialized_layers = []  # List of layer names
+        self.layer_to_index = {}  # layer_name → layer_index
+        self.obj_id_to_layer_label = {}  # SAM2 obj_id → (layer_name, label_id)
+
+    def set_initialized_layers(self, layer_names: list):
+        """Initialize tracking for multiple label layers.
+
+        Args:
+            layer_names: List of label layer names to track
+
+        SAM2 obj_id mapping: layer_index * 1000 + label_id
+        This ensures unique obj_ids across layers.
+        """
+        self.initialized_layers = list(layer_names)
+        self.layer_to_index = {name: idx for idx, name in enumerate(layer_names)}
+
+        # Print initialization summary
+        print(f"\n{'='*60}")
+        print(f"Initializing SAM2 state with {len(layer_names)} layer(s):")
+        for layer_name in layer_names:
+            layer = self.viewer.layers[layer_name]
+            unique_labels = [int(x) for x in np.unique(layer.data) if x != 0]
+            print(f"  - {layer_name}: {len(unique_labels)} label(s) {unique_labels if unique_labels else '(empty)'}")
+        print(f"{'='*60}\n")
+
+    def _map_to_sam_obj_id(self, layer_name: str, label_id: int) -> int:
+        """Map (layer_name, label_id) to unique SAM2 obj_id."""
+        layer_idx = self.layer_to_index[layer_name]
+        sam_obj_id = layer_idx * 1000 + label_id
+        self.obj_id_to_layer_label[sam_obj_id] = (layer_name, label_id)
+        return sam_obj_id
+
+    def _unmap_from_sam_obj_id(self, sam_obj_id: int) -> tuple:
+        """Map SAM2 obj_id back to (layer_name, label_id)."""
+        return self.obj_id_to_layer_label.get(sam_obj_id, (None, None))
+
     # ========================================================================
     # Approved Frames Management
     # ========================================================================
@@ -189,55 +226,69 @@ class SAM2Long_pipeline(QWidget):
         """Bake the point-refined mask into a permanent anchor.
 
         Steps:
-        1. Get current mask from label layer (the preview from point prompts)
+        1. Get current mask from all initialized label layers
         2. Convert to binary mask per object
         3. Call add_new_mask() to commit as permanent anchor
         4. Clear points (now redundant - the mask is the anchor)
+
+        Works across all initialized layers.
         """
         frame_idx = int(t)
-        layer_name = self.mwo.output_layers_combo.currentText()
-        layer = self.viewer.layers[layer_name]
 
         # Get all objects that have been prompted on this frame
         point_inputs = self.inference_state.get("point_inputs_per_obj", {})
 
         baked_objects = []
-        for obj_id in list(point_inputs.keys()):
-            if frame_idx not in point_inputs.get(obj_id, {}):
-                continue
-            if point_inputs[obj_id].get(frame_idx) is None:
+
+        # Process all initialized layers
+        for layer_name in self.initialized_layers:
+            if layer_name not in self.viewer.layers:
                 continue
 
-            # Get the current mask from the label layer (the preview)
+            layer = self.viewer.layers[layer_name]
             mask_2d = layer.data[frame_idx]
-            binary_mask = (mask_2d == obj_id).astype(np.float32)
 
-            if binary_mask.sum() == 0:
-                continue  # No mask to bake
+            # Find SAM obj_ids that belong to this layer
+            for sam_obj_id in list(point_inputs.keys()):
+                if frame_idx not in point_inputs.get(sam_obj_id, {}):
+                    continue
+                if point_inputs[sam_obj_id].get(frame_idx) is None:
+                    continue
 
-            # COMMIT: Bake mask into predictor as permanent anchor
-            self.predictor.add_new_mask(
-                inference_state=self.inference_state,
-                frame_idx=frame_idx,
-                obj_id=int(obj_id),
-                mask=binary_mask,
-            )
+                # Check if this obj_id belongs to current layer
+                obj_layer_name, original_label_id = self._unmap_from_sam_obj_id(sam_obj_id)
+                if obj_layer_name != layer_name:
+                    continue
 
-            # Clear points for this object (now redundant)
-            point_inputs[obj_id].pop(frame_idx, None)
+                # Get the current mask from the label layer (the preview)
+                binary_mask = (mask_2d == original_label_id).astype(np.float32)
 
-            # Clear from self.prompts too
-            if obj_id in self.prompts:
-                self.prompts[obj_id] = [
-                    p for p in self.prompts[obj_id] if p[0] != frame_idx
-                ]
+                if binary_mask.sum() == 0:
+                    continue  # No mask to bake
 
-            baked_objects.append(obj_id)
+                # COMMIT: Bake mask into predictor as permanent anchor
+                self.predictor.add_new_mask(
+                    inference_state=self.inference_state,
+                    frame_idx=frame_idx,
+                    obj_id=int(sam_obj_id),
+                    mask=binary_mask,
+                )
+
+                # Clear points for this object (now redundant)
+                point_inputs[sam_obj_id].pop(frame_idx, None)
+
+                # Clear from self.prompts too
+                if sam_obj_id in self.prompts:
+                    self.prompts[sam_obj_id] = [
+                        p for p in self.prompts[sam_obj_id] if p[0] != frame_idx
+                    ]
+
+                baked_objects.append((layer_name, original_label_id))
 
         # Mark frame as approved
         self.approved_frames.add(frame_idx)
 
-        return baked_objects  # Return list of baked objects for UI feedback
+        return baked_objects  # Return list of (layer, label) tuples for UI feedback
 
     def unapprove_frame(self, t: int):
         """Remove a frame from the approved set."""
@@ -280,7 +331,7 @@ class SAM2Long_pipeline(QWidget):
     # Point Prompt Handling
     # ========================================================================
 
-    def add_point(self, point_array, label_id, neg_or_pos=1):
+    def add_point(self, point_array, label_id, neg_or_pos=1, layer_name=None):
         """Add a point prompt for iterative mask refinement.
 
         Points accumulate within the same (object, frame) for iterative refinement.
@@ -290,9 +341,19 @@ class SAM2Long_pipeline(QWidget):
             point_array: [frame_idx, y, x] coordinates
             label_id: Object/label ID to segment
             neg_or_pos: 1 for positive (include), 0 for negative (exclude)
+            layer_name: Name of the label layer (required for multi-layer support)
         """
         ann_frame_idx = point_array[0]
-        ann_obj_id = label_id
+
+        # Map (layer_name, label_id) to unique SAM2 obj_id
+        if layer_name and layer_name in self.layer_to_index:
+            ann_obj_id = self._map_to_sam_obj_id(layer_name, label_id)
+        else:
+            # Fallback for backward compatibility (single layer)
+            ann_obj_id = label_id
+            if not hasattr(self, 'initialized_layers') or not self.initialized_layers:
+                # Old single-layer mode
+                layer_name = self.mwo.output_layers_list.item(0).text() if self.mwo.output_layers_list.count() > 0 else None
         # Store as (y, x) internally - convert to SAM's (x, y) only at call site
         new_point_yx = (point_array[1], point_array[2])  # y, x
         new_label = neg_or_pos
@@ -344,7 +405,16 @@ class SAM2Long_pipeline(QWidget):
         )
 
         # Update mask preview in label layer
-        layer_name = self.mwo.output_layers_combo.currentText()
+        if not layer_name:
+            # Try to get from active layer
+            active = self.viewer.layers.selection.active
+            if active and hasattr(active, 'name'):
+                layer_name = active.name
+
+        if not layer_name or layer_name not in self.viewer.layers:
+            show_info("No valid label layer selected.")
+            return
+
         layer = self.viewer.layers[layer_name]
         label_layer_data = layer.data
 
@@ -365,7 +435,13 @@ class SAM2Long_pipeline(QWidget):
 
         for i, out_obj_id in enumerate(out_obj_ids):
             out_mask = (out_mask_logits[i] > 0.0).cpu().numpy()
-            mask_for_this_frame[out_mask[0]] = out_obj_id
+            # Map SAM obj_id back to original label_id for this layer
+            _, original_label_id = self._unmap_from_sam_obj_id(out_obj_id)
+            if original_label_id is not None:
+                mask_for_this_frame[out_mask[0]] = original_label_id
+            else:
+                # Fallback for backward compatibility
+                mask_for_this_frame[out_mask[0]] = out_obj_id
 
         label_layer_data[ann_frame_idx, :, :] = mask_for_this_frame
         layer.data = label_layer_data
@@ -377,21 +453,31 @@ class SAM2Long_pipeline(QWidget):
         The user can manually erase if needed, or the preview remains
         as a starting point for new prompts.
         """
-        layer_name = self.mwo.output_layers_combo.currentText()
-        layer = self.viewer.layers[layer_name]
-        obj_id = layer.selected_label
+        # Get currently active layer
+        active_layer = self.viewer.layers.selection.active
+        if not active_layer or not hasattr(active_layer, 'selected_label'):
+            return
+
+        layer_name = active_layer.name
+        original_label_id = active_layer.selected_label
         frame_idx = int(self.viewer.dims.current_step[0])
 
+        # Map to SAM obj_id
+        if layer_name in self.layer_to_index:
+            sam_obj_id = self._map_to_sam_obj_id(layer_name, original_label_id)
+        else:
+            sam_obj_id = original_label_id  # Fallback
+
         # Clear from self.prompts (UI bookkeeping only)
-        if obj_id in self.prompts:
-            self.prompts[obj_id] = [
-                p for p in self.prompts[obj_id] if p[0] != frame_idx
+        if sam_obj_id in self.prompts:
+            self.prompts[sam_obj_id] = [
+                p for p in self.prompts[sam_obj_id] if p[0] != frame_idx
             ]
 
         # Clear from predictor state (the source of truth)
         point_inputs = self.inference_state.get("point_inputs_per_obj", {})
-        if obj_id in point_inputs:
-            point_inputs[obj_id].pop(frame_idx, None)
+        if sam_obj_id in point_inputs:
+            point_inputs[sam_obj_id].pop(frame_idx, None)
 
         # DO NOT clear the label layer - user may want to keep the preview!
 
@@ -415,7 +501,7 @@ class SAM2Long_pipeline(QWidget):
         """
         Propagate segmentation from approved anchor frames through the video.
 
-        Supports multiple labels per frame and multiple anchor frames.
+        Supports multiple labels per frame, multiple anchor frames, and MULTIPLE LAYERS.
         Uses argmax-based merging to avoid overlap ambiguity.
         """
         if config is None:
@@ -423,15 +509,9 @@ class SAM2Long_pipeline(QWidget):
 
         import torch
 
-        # Get source layer
-        layer_name = self.mwo.output_layers_combo.currentText()
-        src_layer = self.viewer.layers[layer_name]
-
-        # Resolve output layer (creates new if source is dask-backed)
-        output_layer = resolve_output_layer(
-            self.viewer, src_layer, config.output_layer_suffix
-        )
-        output_data = output_layer.data
+        if not self.initialized_layers:
+            show_info("No initialized layers. Please initialize first.")
+            return
 
         # Get anchors - use approved frames if any, else use current frame
         anchors = self.get_approved_frames_sorted()
@@ -442,7 +522,8 @@ class SAM2Long_pipeline(QWidget):
             print(f"No approved frames. Using current frame {current_frame} as anchor.")
 
         # Validate anchors
-        nT = output_data.shape[0]
+        first_layer = self.viewer.layers[self.initialized_layers[0]]
+        nT = first_layer.data.shape[0]
         anchors = [a for a in anchors if 0 <= a < nT]
         if not anchors:
             show_info("No valid anchor frames.")
@@ -452,41 +533,51 @@ class SAM2Long_pipeline(QWidget):
             show_info(f"Too many anchors ({len(anchors)}). Max is {config.max_anchors}.")
             return
 
-        # Check label consistency across anchors
-        self._check_label_consistency(anchors, src_layer)
+        # Collect all SAM obj_ids from all initialized layers at anchor frames
+        all_sam_obj_ids = set()
+        layer_obj_map = defaultdict(set)  # layer_name → set of original label_ids
 
-        # Collect all unique object IDs from anchor frames
-        all_obj_ids = set()
-        for t in anchors:
-            mask_2d = get_label_slice_2d(src_layer, self.viewer, t)
-            for obj_id in np.unique(mask_2d):
-                if obj_id != 0:
-                    all_obj_ids.add(int(obj_id))
+        for layer_name in self.initialized_layers:
+            layer = self.viewer.layers[layer_name]
+            for t in anchors:
+                mask_2d = get_label_slice_2d(layer, self.viewer, t)
+                for original_label_id in np.unique(mask_2d):
+                    if original_label_id == 0:
+                        continue
+                    sam_obj_id = self._map_to_sam_obj_id(layer_name, int(original_label_id))
+                    all_sam_obj_ids.add(sam_obj_id)
+                    layer_obj_map[layer_name].add(int(original_label_id))
 
-        if not all_obj_ids:
+        if not all_sam_obj_ids:
             show_info("No labels found in anchor frames.")
             return
 
-        print(f"Found {len(all_obj_ids)} objects across {len(anchors)} anchor frames: {sorted(all_obj_ids)}")
+        print(f"\nPropagating {len(self.initialized_layers)} layer(s) with {len(all_sam_obj_ids)} total objects:")
+        for layer_name in self.initialized_layers:
+            labels = sorted(layer_obj_map[layer_name])
+            print(f"  - {layer_name}: labels {labels}")
+        print(f"Anchor frames: {anchors}\n")
 
         # Reset predictor state
         self.predictor.reset_state(self.inference_state)
 
         # Add all anchor masks to predictor
-        for t in anchors:
-            mask_2d = get_label_slice_2d(src_layer, self.viewer, t)
-            for obj_id in np.unique(mask_2d):
-                if obj_id == 0:
-                    continue
-                binary = (mask_2d == obj_id).astype(np.float32)
-                self.predictor.add_new_mask(
-                    inference_state=self.inference_state,
-                    frame_idx=t,
-                    obj_id=int(obj_id),
-                    mask=binary,
-                )
+        for layer_name in self.initialized_layers:
+            layer = self.viewer.layers[layer_name]
+            for t in anchors:
+                mask_2d = get_label_slice_2d(layer, self.viewer, t)
+                for original_label_id in np.unique(mask_2d):
+                    if original_label_id == 0:
+                        continue
+                    sam_obj_id = self._map_to_sam_obj_id(layer_name, int(original_label_id))
+                    binary = (mask_2d == original_label_id).astype(np.float32)
+                    self.predictor.add_new_mask(
+                        inference_state=self.inference_state,
+                        frame_idx=t,
+                        obj_id=int(sam_obj_id),
+                        mask=binary,
+                    )
 
-        print(f"Propagating from {len(anchors)} anchor frames...")
         anchor_set = set(anchors)
 
         # Propagate through video
@@ -498,36 +589,42 @@ class SAM2Long_pipeline(QWidget):
 
             # Skip anchor frames if protecting
             if config.protect_anchors and frame_idx in anchor_set:
-                # Copy anchor mask to output if different layer
-                if output_layer is not src_layer:
-                    anchor_mask = get_label_slice_2d(src_layer, self.viewer, frame_idx)
-                    if output_data.ndim == 3:
-                        output_data[frame_idx] = anchor_mask
-                    elif output_data.ndim == 4:
-                        z = int(self.viewer.dims.current_step[1])
-                        output_data[frame_idx, z] = anchor_mask
                 continue
 
-            # Merge logits to label image using argmax
-            if len(out_obj_ids) > 0:
-                pred_2d = _logits_to_label_image(
-                    out_obj_ids, out_mask_logits, config.prob_threshold
-                )
-            else:
-                # No objects predicted for this frame
-                pred_2d = np.zeros(
-                    (output_data.shape[-2], output_data.shape[-1]),
-                    dtype=np.int32
-                )
+            # Split SAM results by layer
+            for layer_name in self.initialized_layers:
+                layer = self.viewer.layers[layer_name]
+                layer_data = layer.data
 
-            # Write to output
-            if output_data.ndim == 3:
-                output_data[frame_idx] = pred_2d
-            elif output_data.ndim == 4:
-                z = int(self.viewer.dims.current_step[1])
-                output_data[frame_idx, z] = pred_2d
+                # Create empty mask for this frame
+                if layer_data.ndim == 3:
+                    H, W = layer_data.shape[1], layer_data.shape[2]
+                elif layer_data.ndim == 4:
+                    H, W = layer_data.shape[2], layer_data.shape[3]
+                else:
+                    continue
 
-        output_layer.data = output_data
+                frame_mask = np.zeros((H, W), dtype=np.int32)
+
+                # Extract masks for this layer's objects
+                for i, sam_obj_id in enumerate(out_obj_ids):
+                    obj_layer_name, original_label_id = self._unmap_from_sam_obj_id(sam_obj_id)
+                    if obj_layer_name != layer_name:
+                        continue  # Skip objects from other layers
+
+                    # Get mask and apply threshold
+                    out_mask = (out_mask_logits[i] > config.prob_threshold).cpu().numpy()
+                    frame_mask[out_mask[0]] = original_label_id
+
+                # Write to layer
+                if layer_data.ndim == 3:
+                    layer_data[frame_idx] = frame_mask
+                elif layer_data.ndim == 4:
+                    z = int(self.viewer.dims.current_step[1])
+                    layer_data[frame_idx, z] = frame_mask
+
+                layer.data = layer_data
+
         self.mwo.video_propagation_progressBar.setValue(100)
         print("Propagation complete.")
 

@@ -12,11 +12,14 @@ from qtpy.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QListWidget,
+    QListWidgetItem,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
+from qtpy.QtCore import Qt
 
 from pipelines.sam2long.SAM2Long_pipeline_handler import SAM2Long_pipeline
 
@@ -41,9 +44,17 @@ class SAM2Long(QWidget):
         self.image_layers_combo = self.findChild(
             QComboBox, "image_layer_combo"
         )
-        self.output_layers_combo = self.findChild(
-            QComboBox, "output_layer_combo"
-        )
+
+        # Replace output_layers_combo with multi-select list
+        old_combo = self.findChild(QComboBox, "output_layer_combo")
+        self.output_layers_list = QListWidget()
+        self.output_layers_list.setMaximumHeight(100)
+        self.output_layers_list.setSelectionMode(QListWidget.NoSelection)  # Use checkboxes instead
+        # Replace in layout
+        parent_layout = old_combo.parent().layout()
+        parent_layout.replaceWidget(old_combo, self.output_layers_list)
+        old_combo.setParent(None)
+
         self.model_cbbox = self.findChild(QComboBox, "model_cbbox")
 
         self.initialize_btn = self.findChild(QPushButton, "Initialize_btn")
@@ -55,7 +66,7 @@ class SAM2Long(QWidget):
 
         # Populate combo box - call
         self.populate_combo_box(self.image_layers_combo, "image")
-        self.populate_combo_box(self.output_layers_combo, "label")
+        self.populate_label_layers_list()
         self.populate_model_combo()
 
         # Connect events to functions
@@ -197,12 +208,14 @@ class SAM2Long(QWidget):
             return
 
         frame = int(self.viewer.dims.current_step[0])
-        layer_name = self.output_layers_combo.currentText()
-        if not layer_name or layer_name not in self.viewer.layers:
+
+        # Get currently active layer
+        active_layer = self.viewer.layers.selection.active
+        if not active_layer or not isinstance(active_layer, napari.layers.Labels):
             self.status_hud.setText(f"Label: - | Points: 0+ 0- | Frame: {frame}")
             return
 
-        layer = self.viewer.layers[layer_name]
+        layer = active_layer
         label = layer.selected_label
 
         # Count points from inference_state (source of truth)
@@ -219,7 +232,7 @@ class SAM2Long(QWidget):
         approved = frame in self.pipeline_object.approved_frames
         approved_str = "Yes" if approved else "No"
         self.status_hud.setText(
-            f"Label: {label} | Points: {pos_count}+ {neg_count}- | "
+            f"Layer: {layer.name} | Label: {label} | Points: {pos_count}+ {neg_count}- | "
             f"Frame: {frame} | Approved: {approved_str}"
         )
 
@@ -240,16 +253,9 @@ class SAM2Long(QWidget):
                 and len(layer.data.shape)
                 in [3, 4]  # accept 3D grayscale or 4D color video
             ]
-        elif layer_type == "label":
-            # Get all existing label layers from the napari viewer
-            layers = [
-                layer.name
-                for layer in self.viewer.layers
-                if isinstance(layer, napari.layers.Labels)
-            ]
         else:
             raise ValueError(
-                "Invalid layer_type. Expected 'image' or 'label'."
+                "Invalid layer_type. Expected 'image'."
             )
 
         combobx.addItems(layers)
@@ -257,11 +263,50 @@ class SAM2Long(QWidget):
         if current_text:
             combobx.setCurrentText(current_text)
 
-    # Function to handle combobox state change
+    def populate_label_layers_list(self):
+        """Populate the multi-select list of label layers with checkboxes."""
+        # Save currently checked layers
+        checked_layers = set()
+        for i in range(self.output_layers_list.count()):
+            item = self.output_layers_list.item(i)
+            if item.checkState() == Qt.Checked:
+                checked_layers.add(item.text())
+
+        # Clear and repopulate
+        self.output_layers_list.clear()
+
+        # Get all label layers
+        label_layers = [
+            layer.name
+            for layer in self.viewer.layers
+            if isinstance(layer, napari.layers.Labels)
+        ]
+
+        # Add as checkable items
+        for layer_name in label_layers:
+            item = QListWidgetItem(layer_name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            # Restore checked state if it was checked before
+            if layer_name in checked_layers:
+                item.setCheckState(Qt.Checked)
+            else:
+                item.setCheckState(Qt.Unchecked)
+            self.output_layers_list.addItem(item)
+
+    def get_checked_label_layers(self):
+        """Get list of checked label layer names."""
+        checked = []
+        for i in range(self.output_layers_list.count()):
+            item = self.output_layers_list.item(i)
+            if item.checkState() == Qt.Checked:
+                checked.append(item.text())
+        return checked
+
+    # Function to handle layer changes
     def layer_changed(self):
-        # Populate combo box - call
+        # Populate combo box and label list
         self.populate_combo_box(self.image_layers_combo, "image")
-        self.populate_combo_box(self.output_layers_combo, "label")
+        self.populate_label_layers_list()
 
     def populate_model_combo(self):
         self.model_cbbox.clear()
@@ -341,6 +386,15 @@ class SAM2Long(QWidget):
                 checkpoint_path,
                 model_cfg,
             )
+
+            # Initialize with checked label layers
+            checked_layers = self.get_checked_label_layers()
+            if not checked_layers:
+                show_info("Please check at least one label layer before initializing.")
+                return
+
+            self.pipeline_object.set_initialized_layers(checked_layers)
+
             # Update approved frames display after initialization
             self.update_approved_display()
         else:
@@ -385,6 +439,7 @@ class SAM2Long(QWidget):
         - Ctrl+Space: toggle between positive/negative mode
 
         Points accumulate for iterative mask refinement.
+        Works on whichever label layer is currently active in napari.
         """
         # Check for left mouse button (button 1) with Ctrl modifier
         if event.button != 1:
@@ -398,9 +453,19 @@ class SAM2Long(QWidget):
             show_info("Please initialize first.")
             return
 
-        # Check that label layer exists
-        if self.output_layers_combo.count() == 0:
-            show_info("Set output layer first.")
+        # Get currently active layer
+        active_layer = self.viewer.layers.selection.active
+        if not active_layer or not isinstance(active_layer, napari.layers.Labels):
+            show_info("Please select a label layer first.")
+            return
+
+        # Check that this layer was initialized
+        if not hasattr(self.pipeline_object, "initialized_layers"):
+            show_info("Please initialize with label layers first.")
+            return
+
+        if active_layer.name not in self.pipeline_object.initialized_layers:
+            show_info(f"Layer '{active_layer.name}' was not initialized. Please re-initialize.")
             return
 
         point = [
@@ -408,13 +473,11 @@ class SAM2Long(QWidget):
             int(event.position[1]),
             int(event.position[2]),
         ]
-        layer_name = self.output_layers_combo.currentText()
-        lyr = self.viewer.layers[layer_name]
-        active_label = lyr.selected_label
+        active_label = active_layer.selected_label
 
         # Use mode toggle to determine positive (1) or negative (0)
         neg_or_pos = 0 if self.negative_mode else 1
-        self.pipeline_object.add_point(point, active_label, neg_or_pos=neg_or_pos)
+        self.pipeline_object.add_point(point, active_label, neg_or_pos=neg_or_pos, layer_name=active_layer.name)
 
         # Update status HUD after adding point
         self.update_status_hud()
