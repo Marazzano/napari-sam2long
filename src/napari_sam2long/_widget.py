@@ -10,8 +10,11 @@ from qtpy import uic
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
+    QHBoxLayout,
+    QLabel,
     QProgressBar,
     QPushButton,
+    QVBoxLayout,
     QWidget,
 )
 
@@ -69,6 +72,77 @@ class SAM2Long(QWidget):
         self.video_propagate_btn.clicked.connect(self.video_propagate)
         self.reset_btn.clicked.connect(self.reset_everything)
 
+        # ====================================================================
+        # Multi-Anchor UI: Approve/Clear buttons and approved frames display
+        # ====================================================================
+        self._setup_anchor_ui()
+
+    def _setup_anchor_ui(self):
+        """Set up the UI elements for multi-anchor frame management."""
+        # Create container widget for anchor controls
+        anchor_container = QWidget()
+        anchor_layout = QVBoxLayout(anchor_container)
+        anchor_layout.setContentsMargins(0, 5, 0, 5)
+
+        # Button row
+        button_row = QHBoxLayout()
+        self.approve_btn = QPushButton("Approve Frame")
+        self.approve_btn.setToolTip(
+            "Mark current frame as an anchor for propagation"
+        )
+        self.clear_approved_btn = QPushButton("Clear Approved")
+        self.clear_approved_btn.setToolTip("Clear all approved anchor frames")
+        button_row.addWidget(self.approve_btn)
+        button_row.addWidget(self.clear_approved_btn)
+        anchor_layout.addLayout(button_row)
+
+        # Approved frames display
+        self.approved_list_label = QLabel("Approved: []")
+        self.approved_list_label.setWordWrap(True)
+        anchor_layout.addWidget(self.approved_list_label)
+
+        # Connect buttons
+        self.approve_btn.clicked.connect(self.approve_current_frame)
+        self.clear_approved_btn.clicked.connect(self.clear_approved)
+
+        # Insert anchor controls into the main layout
+        # Find the main layout and add our container
+        main_layout = self.layout()
+        if main_layout is not None:
+            # Insert before the last item (usually stretch or propagate button)
+            main_layout.insertWidget(main_layout.count() - 1, anchor_container)
+        else:
+            # Fallback: create a layout if none exists
+            fallback_layout = QVBoxLayout(self)
+            fallback_layout.addWidget(anchor_container)
+
+    def approve_current_frame(self):
+        """Approve the current frame as an anchor for propagation."""
+        if hasattr(self, "pipeline_object"):
+            t = int(self.viewer.dims.current_step[0])
+            self.pipeline_object.approve_frame(t)
+            self.update_approved_display()
+            show_info(f"Frame {t} approved as anchor.")
+        else:
+            show_info("Please initialize pipeline first.")
+
+    def clear_approved(self):
+        """Clear all approved anchor frames."""
+        if hasattr(self, "pipeline_object"):
+            self.pipeline_object.clear_approved_frames()
+            self.update_approved_display()
+            show_info("Approved frames cleared.")
+        else:
+            show_info("Please initialize pipeline first.")
+
+    def update_approved_display(self):
+        """Update the display label showing approved frames."""
+        if hasattr(self, "pipeline_object"):
+            frames = self.pipeline_object.get_approved_frames_sorted()
+            self.approved_list_label.setText(f"Approved: {frames}")
+        else:
+            self.approved_list_label.setText("Approved: []")
+
     # Function to populate combo boxes based on layers
     def populate_combo_box(self, combobx, layer_type="image"):
         ### Save last selected layer, so that input drop-down menu doesn't change whenever new layer is added to viewer
@@ -84,7 +158,7 @@ class SAM2Long(QWidget):
                 for layer in self.viewer.layers
                 if isinstance(layer, napari.layers.Image)
                 and len(layer.data.shape)
-                == 3  # only add to combobox if the data is 3D
+                in [3, 4]  # accept 3D grayscale or 4D color video
             ]
         elif layer_type == "label":
             # Get all existing label layers from the napari viewer
@@ -187,6 +261,8 @@ class SAM2Long(QWidget):
                 checkpoint_path,
                 model_cfg,
             )
+            # Update approved frames display after initialization
+            self.update_approved_display()
         else:
             print("Model not recognized.")
 
@@ -261,6 +337,7 @@ class SAM2Long(QWidget):
     def reset_everything(self):
         if hasattr(self, "pipeline_object"):
             self.pipeline_object.reset()
+            self.update_approved_display()
 
     def delete_source_dir(self):
         """Deletes the temporary source frame directory when Napari closes."""

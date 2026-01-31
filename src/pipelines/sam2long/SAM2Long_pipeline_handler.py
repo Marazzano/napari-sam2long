@@ -1,17 +1,111 @@
 import os
 import shutil
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 import numpy as np
 import pytest
-from napari.utils.notifications import show_info
+from napari.utils.notifications import show_info, show_warning
 from qtpy.QtWidgets import QWidget
 
 
-# Sam2Long pipeline class
+# ============================================================================
+# Core Helpers for Multi-Label Multi-Frame Conditioning
+# ============================================================================
+
+@dataclass(frozen=True)
+class VideoPropagateConfig:
+    """Configuration for video propagation with multi-anchor support."""
+    prob_threshold: float = 0.50
+    protect_anchors: bool = True
+    max_anchors: int = 10
+    max_total_masks: int = 200
+    write_to_new_layer_if_non_numpy: bool = True
+    output_layer_suffix: str = " [SAM2]"
+
+
+def materialize_2d_slice(x) -> np.ndarray:
+    """Convert sliced array to numpy. Only materializes the passed slice."""
+    if hasattr(x, "compute") and callable(getattr(x, "compute")):
+        x = x.compute()
+    return np.asarray(x)
+
+
+def get_label_slice_2d(label_layer, viewer, t: int) -> np.ndarray:
+    """Get 2D mask from (T,H,W) or (T,Z,H,W) data."""
+    data = label_layer.data
+    ndim = getattr(data, "ndim", None)
+    if ndim == 3:
+        return materialize_2d_slice(data[int(t)])
+    if ndim == 4:
+        z = int(viewer.dims.current_step[1])
+        return materialize_2d_slice(data[int(t), int(z)])
+    raise ValueError(f"Unsupported ndim={ndim}")
+
+
+def resolve_output_layer(viewer, src_label_layer, suffix=" [SAM2]"):
+    """Return numpy-backed layer for writing. Create new if needed."""
+    data = src_label_layer.data
+    if isinstance(data, np.ndarray):
+        return src_label_layer
+    # Create new numpy output layer
+    shape = data.shape
+    out = np.zeros(shape, dtype=np.int32)
+    name = f"{src_label_layer.name}{suffix}"
+    existing = {lyr.name for lyr in viewer.layers}
+    if name in existing:
+        i = 2
+        while f"{name} {i}" in existing:
+            i += 1
+        name = f"{name} {i}"
+    return viewer.add_labels(out, name=name, opacity=src_label_layer.opacity)
+
+
+def _logits_to_label_image(out_obj_ids, out_mask_logits, prob_threshold=0.5):
+    """
+    Convert SAM2 logits to label image using argmax (no overlap ambiguity).
+
+    Args:
+        out_obj_ids: List of object IDs from SAM2
+        out_mask_logits: Tensor of shape [K, 1, H, W] or [K, H, W]
+        prob_threshold: Minimum probability for a pixel to be assigned
+
+    Returns:
+        Label image of shape [H, W] with object IDs
+    """
+    import torch
+    obj_ids = list(out_obj_ids)
+    if len(obj_ids) == 0:
+        raise ValueError("No object IDs")
+
+    # Normalize shape to [K, H, W]
+    logits = out_mask_logits
+    if logits.dim() == 4:
+        logits = logits.squeeze(1)  # [K,1,H,W] -> [K,H,W]
+
+    probs = torch.sigmoid(logits).cpu().numpy()  # [K, H, W]
+    K, H, W = probs.shape
+
+    best_k = probs.argmax(axis=0)  # [H, W]
+    best_p = probs.max(axis=0)     # [H, W]
+
+    label_img = np.zeros((H, W), dtype=np.int32)
+    confident = best_p >= prob_threshold
+
+    # Map argmax index to object ID
+    obj_ids_arr = np.array(obj_ids, dtype=np.int32)
+    label_img[confident] = obj_ids_arr[best_k[confident]]
+
+    return label_img
+
+
+# ============================================================================
+# SAM2Long Pipeline Class
+# ============================================================================
+
 class SAM2Long_pipeline(QWidget):
     def __init__(
         self,
@@ -20,6 +114,12 @@ class SAM2Long_pipeline(QWidget):
         checkpoint_path,
         model_cfg_name,
     ):
+        # Clear and re-initialize hydra to ensure SAM2 configs are found
+        from hydra.core.global_hydra import GlobalHydra
+        from hydra import initialize_config_module
+        if GlobalHydra.instance().is_initialized():
+            GlobalHydra.instance().clear()
+        initialize_config_module("sam2", version_base="1.2")
 
         build_sam2_video_predictor = pytest.importorskip(
             "sam2.build_sam"
@@ -64,18 +164,6 @@ class SAM2Long_pipeline(QWidget):
         self.predictor = build_sam2_video_predictor(
             model_cfg, sam2_checkpoint, device=device
         )
-        # per_obj_png_file = True
-        # self.predictor = build_sam2_video_predictor(
-        #     model_cfg,
-        #     sam2_checkpoint,
-        #     device=device,
-        #     # hydra_overrides_extra=[
-        #     #     "++model.sam_mask_decoder_extra_args.dynamic_multimask_via_stability=true",
-        #     # ],
-        #     # hydra_overrides_extra = [
-        #     # "++model.non_overlap_masks=" + ("false" if per_obj_png_file else "true")
-        #     # ]
-        # )
 
         self.preprocess_volume()
 
@@ -89,6 +177,33 @@ class SAM2Long_pipeline(QWidget):
         self.inference_state["uncertainty"] = 1
 
         self.prompts = {}
+
+        # Multi-anchor support: track approved frames
+        self.approved_frames: set = set()
+
+    # ========================================================================
+    # Approved Frames Management
+    # ========================================================================
+
+    def approve_frame(self, t: int):
+        """Mark a frame as approved/anchor for propagation."""
+        self.approved_frames.add(int(t))
+
+    def unapprove_frame(self, t: int):
+        """Remove a frame from the approved set."""
+        self.approved_frames.discard(int(t))
+
+    def clear_approved_frames(self):
+        """Clear all approved frames."""
+        self.approved_frames.clear()
+
+    def get_approved_frames_sorted(self) -> list:
+        """Get sorted list of approved frame indices."""
+        return sorted(self.approved_frames)
+
+    # ========================================================================
+    # Volume Preprocessing
+    # ========================================================================
 
     def preprocess_volume(self):
         """Save each frame as jpeg to a temp dir"""
@@ -110,6 +225,10 @@ class SAM2Long_pipeline(QWidget):
             cv2.imwrite(slice_path, img_slice.squeeze())
 
         print("Frames generated.")
+
+    # ========================================================================
+    # Point Prompt Handling
+    # ========================================================================
 
     def add_point(self, point_array, label_id, neg_or_pos=1):
         ann_frame_idx = point_array[0]
@@ -199,112 +318,145 @@ class SAM2Long_pipeline(QWidget):
         label_layer_data[ann_frame_idx, :, :] = mask_for_this_frame
         layer.data = label_layer_data
 
-    def video_propagate(self, per_obj_png_file=True):
+    # ========================================================================
+    # Video Propagation (Multi-Anchor Multi-Label Support)
+    # ========================================================================
 
-        torch = pytest.importorskip("torch")
+    def _check_label_consistency(self, anchors, src_layer):
+        """Warn if labels appear in only one anchor."""
+        all_labels = []
+        for t in anchors:
+            mask_2d = get_label_slice_2d(src_layer, self.viewer, t)
+            all_labels.extend([int(x) for x in np.unique(mask_2d) if x != 0])
 
-        # run propagation throughout the video and collect the results in a dict
+        counts = Counter(all_labels)
+        lonely = [lbl for lbl, c in counts.items() if c == 1 and len(anchors) > 1]
+        if lonely:
+            show_warning(f"Labels {lonely} appear in only one anchor - tracking may be unstable.")
+
+    def video_propagate(self, config: VideoPropagateConfig = None):
+        """
+        Propagate segmentation from approved anchor frames through the video.
+
+        Supports multiple labels per frame and multiple anchor frames.
+        Uses argmax-based merging to avoid overlap ambiguity.
+        """
+        if config is None:
+            config = VideoPropagateConfig()
+
+        import torch
+
+        # Get source layer
         layer_name = self.mwo.output_layers_combo.currentText()
-        layer = self.viewer.layers[layer_name]
-        label_layer_data = layer.data
-        label_no = (
-            label_layer_data.max()
-        )  # label_number for different colors in napari
+        src_layer = self.viewer.layers[layer_name]
 
-        # Check that only one label was provided
-        if len(np.unique(label_layer_data)) != 2:
-            if len(np.unique(label_layer_data)) == 1:
-                show_info("No label for this label layer.")
-                return
-            else:
-                show_info("Only one object label per label layer allowed.")
-                return
+        # Resolve output layer (creates new if source is dask-backed)
+        output_layer = resolve_output_layer(
+            self.viewer, src_layer, config.output_layer_suffix
+        )
+        output_data = output_layer.data
 
-        # Check that number of images in viewer and in temporary directory match
-        if len(list(self.source_frame_dir.glob("*"))) != len(label_layer_data):
-            show_info("Reset & initialize before processing new data.")
+        # Get anchors - use approved frames if any, else use current frame
+        anchors = self.get_approved_frames_sorted()
+        if not anchors:
+            # Fall back to current frame if no frames approved
+            current_frame = int(self.viewer.dims.current_step[0])
+            anchors = [current_frame]
+            print(f"No approved frames. Using current frame {current_frame} as anchor.")
+
+        # Validate anchors
+        nT = output_data.shape[0]
+        anchors = [a for a in anchors if 0 <= a < nT]
+        if not anchors:
+            show_info("No valid anchor frames.")
             return
 
-        ### SAM2Long Parameters
-        object_ids = [
-            0
-        ]  # currently this only allows segmenting one object at a time
-        object_idx = 0
-        score_thresh = 0.0
-        output_scores_per_object = defaultdict(dict)
+        if len(anchors) > config.max_anchors:
+            show_info(f"Too many anchors ({len(anchors)}). Max is {config.max_anchors}.")
+            return
 
-        ### Use mask on currently viewed frame; enables using point prompts and/or manually drawn masks using napari's tools
+        # Check label consistency across anchors
+        self._check_label_consistency(anchors, src_layer)
+
+        # Collect all unique object IDs from anchor frames
+        all_obj_ids = set()
+        for t in anchors:
+            mask_2d = get_label_slice_2d(src_layer, self.viewer, t)
+            for obj_id in np.unique(mask_2d):
+                if obj_id != 0:
+                    all_obj_ids.add(int(obj_id))
+
+        if not all_obj_ids:
+            show_info("No labels found in anchor frames.")
+            return
+
+        print(f"Found {len(all_obj_ids)} objects across {len(anchors)} anchor frames: {sorted(all_obj_ids)}")
+
+        # Reset predictor state
         self.predictor.reset_state(self.inference_state)
-        self.predictor.add_new_mask(
-            inference_state=self.inference_state,
-            frame_idx=self.viewer.dims.current_step[0],
-            obj_id=0,
-            mask=label_layer_data[self.viewer.dims.current_step[0]],
-        )
 
-        print("Get per-frame segmentations.")
-        for frame_idx in self.predictor.propagate_in_video(
-            self.inference_state,
-            reverse=False,
+        # Add all anchor masks to predictor
+        for t in anchors:
+            mask_2d = get_label_slice_2d(src_layer, self.viewer, t)
+            for obj_id in np.unique(mask_2d):
+                if obj_id == 0:
+                    continue
+                binary = (mask_2d == obj_id).astype(np.float32)
+                self.predictor.add_new_mask(
+                    inference_state=self.inference_state,
+                    frame_idx=t,
+                    obj_id=int(obj_id),
+                    mask=binary,
+                )
+
+        print(f"Propagating from {len(anchors)} anchor frames...")
+        anchor_set = set(anchors)
+
+        # Propagate through video
+        for frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
+            self.inference_state, reverse=False
         ):
-            progress = int((frame_idx * 100) / label_layer_data.shape[0])
+            progress = int((frame_idx * 100) / nT)
             self.mwo.video_propagation_progressBar.setValue(progress)
 
-        out_mask_logits = self.predictor.get_propagated_masks(
-            self.inference_state
-        )
-        input_frame_idx = next(
-            iter(
-                self.inference_state["consolidated_frame_inds"][
-                    "cond_frame_outputs"
-                ]
-            )
-        )
-        for frame_idx in range(
-            input_frame_idx, self.inference_state["num_frames"]
-        ):
-            output_scores_per_object[object_idx][frame_idx] = (
-                out_mask_logits[frame_idx - input_frame_idx].cpu().numpy()
-            )
+            # Skip anchor frames if protecting
+            if config.protect_anchors and frame_idx in anchor_set:
+                # Copy anchor mask to output if different layer
+                if output_layer is not src_layer:
+                    anchor_mask = get_label_slice_2d(src_layer, self.viewer, frame_idx)
+                    if output_data.ndim == 3:
+                        output_data[frame_idx] = anchor_mask
+                    elif output_data.ndim == 4:
+                        z = int(self.viewer.dims.current_step[1])
+                        output_data[frame_idx, z] = anchor_mask
+                continue
 
-        video_segments = (
-            {}
-        )  # video_segments contains the per-frame segmentation results
-
-        for frame_idx in range(
-            input_frame_idx, self.inference_state["num_frames"]
-        ):
-            scores = torch.full(
-                size=(
-                    len(object_ids),
-                    1,
-                    self.inference_state["video_height"],
-                    self.inference_state["video_width"],
-                ),
-                fill_value=-1024.0,
-                dtype=torch.float32,
-            )
-            for i, object_id in enumerate(object_ids):
-                if frame_idx in output_scores_per_object[object_id]:
-                    scores[i] = torch.from_numpy(
-                        output_scores_per_object[object_id][frame_idx]
-                    )
-
-            if not per_obj_png_file:
-                scores = self.predictor._apply_non_overlapping_constraints(
-                    scores
+            # Merge logits to label image using argmax
+            if len(out_obj_ids) > 0:
+                pred_2d = _logits_to_label_image(
+                    out_obj_ids, out_mask_logits, config.prob_threshold
                 )
-            per_obj_output_mask = {
-                object_id: (scores[i] > score_thresh).cpu().numpy()
-                for i, object_id in enumerate(object_ids)
-            }
-            video_segments[frame_idx] = per_obj_output_mask
+            else:
+                # No objects predicted for this frame
+                pred_2d = np.zeros(
+                    (output_data.shape[-2], output_data.shape[-1]),
+                    dtype=np.int32
+                )
 
-            for _, out_mask in video_segments[frame_idx].items():
-                label_layer_data[frame_idx, :, :] = out_mask * label_no
+            # Write to output
+            if output_data.ndim == 3:
+                output_data[frame_idx] = pred_2d
+            elif output_data.ndim == 4:
+                z = int(self.viewer.dims.current_step[1])
+                output_data[frame_idx, z] = pred_2d
 
-        layer.data = label_layer_data
+        output_layer.data = output_data
         self.mwo.video_propagation_progressBar.setValue(100)
+        print("Propagation complete.")
+
+    # ========================================================================
+    # Reset and Cleanup
+    # ========================================================================
 
     def reset(self):
         self.predictor.reset_state(self.inference_state)
@@ -318,6 +470,7 @@ class SAM2Long_pipeline(QWidget):
             label_layer.data = zero_mask
 
         self.prompts = {}  ### Empty prompts when resetting
+        self.approved_frames.clear()  ### Clear approved frames on reset
         self.mwo.video_propagation_progressBar.setValue(0)
 
     def delete_source_frame_dir(self):
