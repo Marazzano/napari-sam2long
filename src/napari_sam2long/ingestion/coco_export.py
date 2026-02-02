@@ -72,6 +72,7 @@ class COCOExporter:
         self,
         output_path: Optional[str] = None,
         video_ids: Optional[List[str]] = None,
+        frames_by_video: Optional[Dict[str, List[int]]] = None,
         use_original_frame_ids: bool = True,
     ) -> Dict[str, Any]:
         """
@@ -111,10 +112,17 @@ class COCOExporter:
             images_dir = self.project.images_dir(video_id)
             masks_dir = self.project.masks_dir(video_id)
 
+            allowed_frames = None
+            if frames_by_video and video_id in frames_by_video:
+                allowed_frames = set(frames_by_video[video_id])
+
             for frame_info in metadata["frames"]:
                 seq_id = frame_info["seq"]
                 orig_id = frame_info["orig"]
                 filename = frame_info["file"]
+
+                if allowed_frames is not None and seq_id not in allowed_frames:
+                    continue
 
                 image_id = orig_id if use_original_frame_ids else seq_id
 

@@ -107,16 +107,16 @@ class ExportCurationPanel(QWidget):
             self._update_status()
             return
 
-        # Create checkable items for each frame
+        # Create checkable items for each frame (default: none selected)
         for t in range(total_frames):
             item = QListWidgetItem(f"Frame {t}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked)  # Default: all frames approved
+            item.setCheckState(Qt.Unchecked)
             self.frame_list.addItem(item)
             self.frame_items[t] = item
 
-        # Initialize export set with all frames
-        self.export_frames = set(range(total_frames))
+        # Initialize export set with none selected
+        self.export_frames = set()
 
         self.frame_list.blockSignals(False)
         self._update_status()

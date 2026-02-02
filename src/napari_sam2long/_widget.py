@@ -7,6 +7,7 @@ import napari
 import numpy as np
 import requests
 from napari.utils.notifications import show_info
+from napari.qt.threading import thread_worker
 from qtpy import uic
 from qtpy.QtWidgets import (
     QApplication,
@@ -330,19 +331,45 @@ class SAM2Long(QWidget):
         export_layout = QVBoxLayout()
         export_group.setLayout(export_layout)
 
-        # Row 1: Export to COCO button (main action)
-        self.export_coco_btn = QPushButton("Export Project to COCO")
+        # Row 1: Export actions
+        export_actions = QHBoxLayout()
+
+        self.export_coco_btn = QPushButton("Export")
         self.export_coco_btn.setEnabled(False)
-        self.export_coco_btn.setToolTip("Export all completed videos to COCO format")
-        self.export_coco_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 8px;")
+        self.export_coco_btn.setToolTip("Export current video to COCO format")
+        self.export_coco_btn.setStyleSheet(
+            "background-color: #2196F3; color: white; font-weight: bold; padding: 8px;"
+        )
         self.export_coco_btn.clicked.connect(self.export_to_coco)
-        export_layout.addWidget(self.export_coco_btn)
+        export_actions.addWidget(self.export_coco_btn)
+
+        self.export_complete_btn = QPushButton("Mark Complete & Export")
+        self.export_complete_btn.setEnabled(False)
+        self.export_complete_btn.setToolTip(
+            "Mark current video complete, export its masks, then go to next video"
+        )
+        self.export_complete_btn.setStyleSheet(
+            "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;"
+        )
+        self.export_complete_btn.clicked.connect(self.mark_complete_and_export)
+        export_actions.addWidget(self.export_complete_btn)
+
+        export_layout.addLayout(export_actions)
 
         # Row 2: Configure export button (settings)
         self.configure_export_btn = QPushButton("Configure Frame Export...")
         self.configure_export_btn.setToolTip("Configure export settings (frame selection, format options, etc.)")
         self.configure_export_btn.clicked.connect(self.open_export_config)
         export_layout.addWidget(self.configure_export_btn)
+
+        # Row 3: Project-level export
+        self.export_project_btn = QPushButton("Export Entire Project (COCO)")
+        self.export_project_btn.setEnabled(False)
+        self.export_project_btn.setToolTip(
+            "Export saved masks for the entire project to a single COCO file"
+        )
+        self.export_project_btn.clicked.connect(self.export_project_to_coco)
+        export_layout.addWidget(self.export_project_btn)
 
         # Insert at the very bottom of main layout
         main_layout = self.layout()
@@ -650,6 +677,10 @@ class SAM2Long(QWidget):
             # Enable export button
             if hasattr(self, 'export_coco_btn'):
                 self.export_coco_btn.setEnabled(True)
+            if hasattr(self, 'export_complete_btn'):
+                self.export_complete_btn.setEnabled(True)
+            if hasattr(self, 'export_project_btn'):
+                self.export_project_btn.setEnabled(True)
 
             show_info(f"Loaded project: {project_name}")
 
@@ -903,6 +934,12 @@ class SAM2Long(QWidget):
             self.prev_video_btn.setEnabled(False)
             self.next_video_btn.setEnabled(False)
             self.complete_next_btn.setEnabled(False)
+            if hasattr(self, "export_coco_btn"):
+                self.export_coco_btn.setEnabled(False)
+            if hasattr(self, "export_complete_btn"):
+                self.export_complete_btn.setEnabled(False)
+            if hasattr(self, "export_project_btn"):
+                self.export_project_btn.setEnabled(False)
             return
 
         video_ids = self.current_project.video_ids()
@@ -910,9 +947,124 @@ class SAM2Long(QWidget):
         self.prev_video_btn.setEnabled(self.current_video_index > 0)
         self.next_video_btn.setEnabled(self.current_video_index < len(video_ids) - 1)
         self.complete_next_btn.setEnabled(True)
+        if hasattr(self, "export_coco_btn"):
+            self.export_coco_btn.setEnabled(True)
+        if hasattr(self, "export_complete_btn"):
+            self.export_complete_btn.setEnabled(True)
+        if hasattr(self, "export_project_btn"):
+            self.export_project_btn.setEnabled(True)
+
+    def _export_coco(self, video_ids=None, frames_by_video=None):
+        """Run COCO export and return (output_path, coco_dict)."""
+        from .ingestion.coco_export import COCOExporter
+
+        exporter = COCOExporter(self.current_project)
+        output_path = str(self.current_project.export_dir() / "annotations.json")
+        coco = exporter.export(
+            output_path=output_path,
+            video_ids=video_ids,
+            frames_by_video=frames_by_video,
+        )
+        return output_path, coco
+
+    def mark_complete_and_export(self):
+        """Mark current video complete, export its masks, then go to next."""
+        if self.current_project is None or self.current_video_id is None:
+            return
+
+        if len(self.export_config_dialog.export_frames) == 0:
+            QMessageBox.warning(
+                self,
+                "No Frames Selected",
+                "No frames selected for export. Please configure frame export first.",
+            )
+            self.open_export_config()
+            return
+
+        # Check if there are any masks
+        has_masks = self._check_has_masks()
+        if not has_masks:
+            reply = QMessageBox.warning(
+                self,
+                "No Masks Found",
+                "No masks detected in any label layer. Mark as complete and export anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        reply = QMessageBox.question(
+            self,
+            "Mark Complete & Export",
+            f"Mark video '{self.current_video_id}' as complete and export its masks?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply != QMessageBox.Yes:
+            return
+
+        # Save current masks
+        self.save_current_masks()
+
+        # Update status
+        self.current_project.update_status(self.current_video_id, "completed")
+
+        # Export only current video (background)
+        frames_by_video = {self.current_video_id: set(self.export_config_dialog.export_frames)}
+        self.export_complete_btn.setEnabled(False)
+        worker = thread_worker(
+            lambda: self._export_coco(
+                video_ids=[self.current_video_id],
+                frames_by_video=frames_by_video,
+            )
+        )()
+        self._export_worker = worker
+
+        def _on_export_done(result):
+            output_path, coco = result
+            show_info(
+                f"Export complete for '{self.current_video_id}'.\n\n"
+                f"Images: {len(coco['images'])}\n"
+                f"Annotations: {len(coco['annotations'])}\n"
+                f"Categories: {len(coco['categories'])}\n\n"
+                f"Saved to: {output_path}"
+            )
+
+            # Move to next
+            video_ids = self.current_project.video_ids()
+            if self.current_video_index < len(video_ids) - 1:
+                self.current_video_index += 1
+                self.load_current_video()
+            else:
+                show_info("All videos completed!")
+
+            self.update_navigation_buttons()
+
+            # Update project info
+            stats = self.current_project.stats()
+            project_name = os.path.basename(str(self.current_project.root))
+            self.project_info_label.setText(
+                f"Project: {project_name} | Videos: {stats['total']} "
+                f"(Pending: {stats['pending']}, Completed: {stats['completed']})"
+            )
+
+        def _on_export_error(err):
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Error during export:\n{str(err)}",
+            )
+            self.update_navigation_buttons()
+
+        worker.returned.connect(_on_export_done)
+        worker.errored.connect(_on_export_error)
+        worker.start()
+
+        return
 
     def export_to_coco(self):
-        """Export project to COCO format."""
+        """Export current video to COCO format."""
         if self.current_project is None:
             show_info("No project loaded")
             return
@@ -921,26 +1073,80 @@ class SAM2Long(QWidget):
         if self.current_video_id:
             self.save_current_masks()
 
-        # Ask which videos to export
-        stats = self.current_project.stats()
-        reply = QMessageBox.question(
-            self,
-            "Export to COCO",
-            f"Export all videos to COCO format?\n\n"
-            f"Total videos: {stats['total']}\n"
-            f"Completed: {stats['completed']}\n"
-            f"Pending: {stats['pending']}\n\n"
-            f"Export all or only completed?",
-            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
-            QMessageBox.Yes
-        )
-
-        if reply == QMessageBox.Cancel:
+        if len(self.export_config_dialog.export_frames) == 0:
+            QMessageBox.warning(
+                self,
+                "No Frames Selected",
+                "No frames selected for export. Please configure frame export first.",
+            )
+            self.open_export_config()
             return
 
-        # Determine which videos to export
-        if reply == QMessageBox.No:
-            # Export only completed
+        frames_by_video = {self.current_video_id: set(self.export_config_dialog.export_frames)}
+
+        self.export_coco_btn.setEnabled(False)
+        worker = thread_worker(
+            lambda: self._export_coco(
+                video_ids=[self.current_video_id],
+                frames_by_video=frames_by_video,
+            )
+        )()
+        self._export_worker = worker
+
+        def _on_export_done(result):
+            output_path, coco = result
+
+            show_info(
+                f"Export complete for '{self.current_video_id}'.\n\n"
+                f"Images: {len(coco['images'])}\n"
+                f"Annotations: {len(coco['annotations'])}\n"
+                f"Categories: {len(coco['categories'])}\n\n"
+                f"Saved to: {output_path}"
+            )
+
+            self.update_navigation_buttons()
+
+        def _on_export_error(err):
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Error during export:\n{str(err)}"
+            )
+            self.update_navigation_buttons()
+
+        worker.returned.connect(_on_export_done)
+        worker.errored.connect(_on_export_error)
+        worker.start()
+
+    def export_project_to_coco(self):
+        """Export entire project to COCO format."""
+        if self.current_project is None:
+            show_info("No project loaded")
+            return
+
+        # Save current video masks first
+        if self.current_video_id:
+            self.save_current_masks()
+
+        stats = self.current_project.stats()
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("Export Entire Project (COCO)")
+        dialog.setText(
+            "Export videos to COCO format?\n\n"
+            f"Total videos: {stats['total']}\n"
+            f"Completed: {stats['completed']}\n"
+            f"Pending: {stats['pending']}\n"
+        )
+        export_all_btn = dialog.addButton("Export All", QMessageBox.AcceptRole)
+        export_completed_btn = dialog.addButton("Only Completed", QMessageBox.DestructiveRole)
+        cancel_btn = dialog.addButton(QMessageBox.Cancel)
+        dialog.exec_()
+
+        clicked = dialog.clickedButton()
+        if clicked is None or clicked == cancel_btn:
+            return
+
+        if clicked == export_completed_btn:
             video_ids = [
                 vid for vid, info in self.current_project.manifest["videos"].items()
                 if info["status"] == "completed"
@@ -949,31 +1155,38 @@ class SAM2Long(QWidget):
                 show_info("No completed videos to export")
                 return
         else:
-            # Export all
             video_ids = None
 
-        try:
-            from .ingestion.coco_export import COCOExporter
+        self.export_project_btn.setEnabled(False)
+        worker = thread_worker(
+            lambda: self._export_coco(video_ids=video_ids)
+        )()
+        self._export_worker = worker
 
-            exporter = COCOExporter(self.current_project)
-            output_path = str(self.current_project.export_dir() / "annotations.json")
-
-            coco = exporter.export(output_path=output_path, video_ids=video_ids)
+        def _on_export_done(result):
+            output_path, coco = result
 
             show_info(
-                f"Export complete!\n\n"
+                "Export complete!\n\n"
                 f"Images: {len(coco['images'])}\n"
                 f"Annotations: {len(coco['annotations'])}\n"
                 f"Categories: {len(coco['categories'])}\n\n"
                 f"Saved to: {output_path}"
             )
 
-        except Exception as e:
+            self.update_navigation_buttons()
+
+        def _on_export_error(err):
             QMessageBox.critical(
                 self,
                 "Export Failed",
-                f"Error during export:\n{str(e)}"
+                f"Error during export:\n{str(err)}"
             )
+            self.update_navigation_buttons()
+
+        worker.returned.connect(_on_export_done)
+        worker.errored.connect(_on_export_error)
+        worker.start()
 
     # ====================================================================
     # End Project Management Methods
