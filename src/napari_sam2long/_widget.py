@@ -22,6 +22,7 @@ from qtpy.QtWidgets import (
 from qtpy.QtCore import Qt
 
 from pipelines.sam2long.SAM2Long_pipeline_handler import SAM2Long_pipeline
+from .export_curation import ExportConfigDialog
 
 
 # Main Plugin class that is connected from outside at napari plugin entry point
@@ -73,6 +74,7 @@ class SAM2Long(QWidget):
         self.viewer.layers.events.inserted.connect(self.layer_changed)
         self.viewer.layers.events.removed.connect(self.layer_changed)
         self.viewer.layers.events.changed.connect(self.layer_changed)
+        self.image_layers_combo.currentTextChanged.connect(self.update_export_frame_list)
         self.viewer.mouse_drag_callbacks.append(self.on_mouse_click)
         self.appInstance.lastWindowClosed.connect(
             self.delete_source_dir
@@ -87,6 +89,7 @@ class SAM2Long(QWidget):
         # Multi-Anchor UI: Approve/Clear buttons and approved frames display
         # ====================================================================
         self._setup_anchor_ui()
+        self._setup_export_curation_ui()
 
     def _setup_anchor_ui(self):
         """Set up the UI elements for multi-anchor frame management."""
@@ -216,6 +219,33 @@ class SAM2Long(QWidget):
             f"Layer: {layer.name} | Label: {label} | Frame: {frame} {approved_str}"
         )
 
+    def _setup_export_curation_ui(self):
+        """
+        Add the export configuration button to the UI.
+
+        Opens a dialog for configuring export settings including
+        frame selection and other COCO export options.
+        """
+        # Create the dialog (but don't show it yet)
+        self.export_config_dialog = ExportConfigDialog(0, parent=self)
+
+        # Create a button to open the export configuration dialog
+        self.configure_export_btn = QPushButton("Configure Export...")
+        self.configure_export_btn.setToolTip("Configure export settings (frame selection, format options, etc.)")
+        self.configure_export_btn.clicked.connect(self.open_export_config)
+
+        # Insert button into main layout (before the final stretch/bottom section)
+        main_layout = self.layout()
+        if main_layout is not None:
+            main_layout.insertWidget(main_layout.count() - 1, self.configure_export_btn)
+
+    def open_export_config(self):
+        """Open the export configuration dialog."""
+        # Update the dialog with current layer info before showing
+        self.update_export_frame_list()
+        # Show the dialog
+        self.export_config_dialog.exec_()
+
     # Function to populate combo boxes based on layers
     def populate_combo_box(self, combobx, layer_type="image"):
         ### Save last selected layer, so that input drop-down menu doesn't change whenever new layer is added to viewer
@@ -282,11 +312,65 @@ class SAM2Long(QWidget):
                 checked.append(item.text())
         return checked
 
+    def _get_current_image_layer(self):
+        """
+        Get the currently selected image layer from the combo box.
+
+        Returns:
+            napari.layers.Image or None: The selected layer, or None if invalid/empty.
+        """
+        layer_name = self.image_layers_combo.currentText()
+        if not layer_name:
+            return None
+
+        try:
+            layer = self.viewer.layers[layer_name]
+            if isinstance(layer, napari.layers.Image):
+                return layer
+        except KeyError:
+            pass  # Layer was deleted
+
+        return None
+
+    def update_export_frame_list(self):
+        """
+        Update the export configuration dialog to match the current image layer.
+
+        Called when:
+        - User selects a different image layer
+        - Layers are added/removed
+        - Pipeline is initialized
+        - User opens the export config dialog
+        """
+        layer = self._get_current_image_layer()
+
+        if layer is None:
+            # No valid layer selected
+            self.export_config_dialog.set_total_frames(0)
+            return
+
+        # Determine number of frames
+        shape = layer.data.shape
+
+        if len(shape) == 3:
+            # Grayscale video: (T, Y, X)
+            num_frames = shape[0]
+        elif len(shape) == 4:
+            # Color video: (T, Y, X, C) or (T, C, Y, X)
+            num_frames = shape[0]
+        else:
+            # 2D image or invalid shape
+            num_frames = 0
+
+        self.export_config_dialog.set_total_frames(num_frames)
+
     # Function to handle layer changes
     def layer_changed(self):
         # Populate combo box and label list
         self.populate_combo_box(self.image_layers_combo, "image")
         self.populate_label_layers_list()
+        # Update export frame list when layers change
+        self.update_export_frame_list()
 
     def populate_model_combo(self):
         self.model_cbbox.clear()
@@ -377,6 +461,8 @@ class SAM2Long(QWidget):
 
             # Update approved frames display after initialization
             self.update_approved_display()
+            # Update export frame list after pipeline initialization
+            self.update_export_frame_list()
         else:
             print("Model not recognized.")
 
