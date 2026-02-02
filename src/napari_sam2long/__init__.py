@@ -4,5 +4,6 @@ except ImportError:
     __version__ = "unknown"
 
 from ._widget import SAM2Long
+from .ingestion import Project, ProjectOrganizer, COCOExporter
 
-__all__ = ("SAM2Long",)
+__all__ = ("SAM2Long", "Project", "ProjectOrganizer", "COCOExporter")

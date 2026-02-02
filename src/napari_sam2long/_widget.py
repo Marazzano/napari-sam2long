@@ -4,16 +4,20 @@ import os
 import shutil
 
 import napari
+import numpy as np
 import requests
 from napari.utils.notifications import show_info
 from qtpy import uic
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
+    QFileDialog,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QVBoxLayout,
@@ -23,6 +27,8 @@ from qtpy.QtCore import Qt
 
 from pipelines.sam2long.SAM2Long_pipeline_handler import SAM2Long_pipeline
 from .export_curation import ExportConfigDialog
+from .ingestion import Project
+from .ingestion.mask_io import read_indexed_mask, write_indexed_mask
 
 
 # Main Plugin class that is connected from outside at napari plugin entry point
@@ -41,6 +47,14 @@ class SAM2Long(QWidget):
         )
         uic.loadUi(abs_file_path, self)
 
+        # Project state tracking
+        self.current_project = None
+        self.current_video_id = None
+        self.current_video_index = 0
+
+        # Setup project manager UI (must be before getting children)
+        self._setup_project_manager_ui()
+
         # Get required children for functionality addition
         self.image_layers_combo = self.findChild(
             QComboBox, "image_layer_combo"
@@ -49,7 +63,7 @@ class SAM2Long(QWidget):
         # Replace output_layers_combo with multi-select list
         old_combo = self.findChild(QComboBox, "output_layer_combo")
         self.output_layers_list = QListWidget()
-        self.output_layers_list.setMaximumHeight(100)
+        self.output_layers_list.setMaximumHeight(60)  # Compact height
         self.output_layers_list.setSelectionMode(QListWidget.NoSelection)  # Use checkboxes instead
         # Replace in layout
         parent_layout = old_combo.parent().layout()
@@ -91,62 +105,114 @@ class SAM2Long(QWidget):
         self._setup_anchor_ui()
         self._setup_export_curation_ui()
 
+    def _setup_project_manager_ui(self):
+        """Set up the Project Manager UI section at the top."""
+        # Create project manager group box
+        project_group = QGroupBox("Project Manager")
+        project_layout = QVBoxLayout()
+        project_group.setLayout(project_layout)
+
+        # Row 1: Load project button
+        load_row = QHBoxLayout()
+        self.load_project_btn = QPushButton("Load Project...")
+        self.load_project_btn.setToolTip("Load an organized project folder")
+        self.load_project_btn.clicked.connect(self.load_project_folder)
+        load_row.addWidget(self.load_project_btn)
+        project_layout.addLayout(load_row)
+
+        # Row 2: Project info display
+        self.project_info_label = QLabel("No project loaded")
+        self.project_info_label.setStyleSheet("font-weight: bold;")
+        project_layout.addWidget(self.project_info_label)
+
+        # Row 3: Video info display
+        self.video_info_label = QLabel("")
+        project_layout.addWidget(self.video_info_label)
+
+        # Row 4: Navigation buttons
+        nav_row = QHBoxLayout()
+        self.prev_video_btn = QPushButton("← Previous")
+        self.prev_video_btn.setEnabled(False)
+        self.prev_video_btn.clicked.connect(self.prev_video)
+
+        self.next_video_btn = QPushButton("Next →")
+        self.next_video_btn.setEnabled(False)
+        self.next_video_btn.clicked.connect(self.next_video)
+
+        self.complete_next_btn = QPushButton("✓ Complete & Next")
+        self.complete_next_btn.setEnabled(False)
+        self.complete_next_btn.clicked.connect(self.mark_complete_and_next)
+        self.complete_next_btn.setStyleSheet("background-color: #4CAF50; color: white; font-weight: bold;")
+
+        nav_row.addWidget(self.prev_video_btn)
+        nav_row.addWidget(self.next_video_btn)
+        nav_row.addWidget(self.complete_next_btn)
+        project_layout.addLayout(nav_row)
+
+        # Insert at the top of the main layout
+        main_layout = self.layout()
+        if main_layout is not None:
+            main_layout.insertWidget(0, project_group)
+
     def _setup_anchor_ui(self):
         """Set up the UI elements for multi-anchor frame management."""
-        # Create container widget for anchor controls
-        anchor_container = QWidget()
-        anchor_layout = QVBoxLayout(anchor_container)
-        anchor_layout.setContentsMargins(0, 5, 0, 5)
+        # Create grouped container for anchor controls
+        anchor_group = QGroupBox("Anchor Frame Management")
+        anchor_layout = QVBoxLayout()
+        anchor_group.setLayout(anchor_layout)
 
         # Button row 1: Approve/Unapprove
         button_row1 = QHBoxLayout()
-        self.approve_btn = QPushButton("Approve Frame")
-        self.approve_btn.setToolTip(
-            "Mark current frame as anchor for propagation"
-        )
-        self.unapprove_btn = QPushButton("Unapprove Frame")
-        self.unapprove_btn.setToolTip(
-            "Remove current frame from approved anchors"
-        )
+        self.approve_btn = QPushButton("Approve")
+        self.approve_btn.setToolTip("Mark current frame as anchor for propagation")
+
+        self.unapprove_btn = QPushButton("Unapprove")
+        self.unapprove_btn.setToolTip("Remove current frame from approved anchors")
+
         button_row1.addWidget(self.approve_btn)
         button_row1.addWidget(self.unapprove_btn)
         anchor_layout.addLayout(button_row1)
 
-        # Button row 2: Clear all
+        # Button row 2: Clear anchors and clear current frame
         button_row2 = QHBoxLayout()
-        self.clear_approved_btn = QPushButton("Clear All Approved")
+        self.clear_approved_btn = QPushButton("Clear All Anchors")
         self.clear_approved_btn.setToolTip("Clear all approved anchor frames")
+
+        self.clear_frame_btn = QPushButton("Clear Current Frame")
+        self.clear_frame_btn.setToolTip("Clear masks on current frame only (for redrawing)")
+        self.clear_frame_btn.setStyleSheet("background-color: #f44336; color: white;")
+
         button_row2.addWidget(self.clear_approved_btn)
+        button_row2.addWidget(self.clear_frame_btn)
         anchor_layout.addLayout(button_row2)
 
         # Approved frames display
         self.approved_list_label = QLabel("Approved: []")
         self.approved_list_label.setWordWrap(True)
+        self.approved_list_label.setStyleSheet("font-size: 9pt;")
         anchor_layout.addWidget(self.approved_list_label)
 
         # Status HUD
         self.status_hud = QLabel("Layer: - | Label: - | Frame: -")
-        self.status_hud.setStyleSheet("font-family: monospace; color: #888;")
+        self.status_hud.setStyleSheet("font-family: monospace; color: #888; font-size: 9pt;")
         anchor_layout.addWidget(self.status_hud)
 
         # Connect buttons
         self.approve_btn.clicked.connect(self.approve_current_frame)
         self.unapprove_btn.clicked.connect(self.unapprove_current_frame)
         self.clear_approved_btn.clicked.connect(self.clear_approved)
+        self.clear_frame_btn.clicked.connect(self.clear_current_frame)
 
         # Connect frame change to update status HUD
         self.viewer.dims.events.current_step.connect(self.update_status_hud)
 
         # Insert anchor controls into the main layout
-        # Find the main layout and add our container
         main_layout = self.layout()
         if main_layout is not None:
-            # Insert before the last item (usually stretch or propagate button)
-            main_layout.insertWidget(main_layout.count() - 1, anchor_container)
+            main_layout.insertWidget(main_layout.count() - 1, anchor_group)
         else:
-            # Fallback: create a layout if none exists
             fallback_layout = QVBoxLayout(self)
-            fallback_layout.addWidget(anchor_container)
+            fallback_layout.addWidget(anchor_group)
 
     def approve_current_frame(self):
         """Approve the current frame as an anchor for propagation."""
@@ -187,6 +253,36 @@ class SAM2Long(QWidget):
             show_info("Approved frames cleared.")
         else:
             show_info("Please initialize pipeline first.")
+
+    def clear_current_frame(self):
+        """Clear all masks on the current frame across all checked label layers."""
+        # Get current frame index
+        current_frame = int(self.viewer.dims.current_step[0])
+
+        # Get all checked label layers
+        checked_layers = self.get_checked_label_layers()
+
+        if not checked_layers:
+            show_info("No label layers selected. Check layers in the Labels list.")
+            return
+
+        # Clear masks on current frame for each checked layer
+        cleared_count = 0
+        for layer_name in checked_layers:
+            try:
+                layer = self.viewer.layers[layer_name]
+                if isinstance(layer, napari.layers.Labels):
+                    # Clear the current frame
+                    layer.data[current_frame] = 0
+                    layer.refresh()
+                    cleared_count += 1
+            except KeyError:
+                continue
+
+        if cleared_count > 0:
+            show_info(f"Cleared frame {current_frame} in {cleared_count} layer(s)")
+        else:
+            show_info("No layers to clear")
 
     def update_approved_display(self):
         """Update the display label showing approved frames."""
@@ -229,15 +325,29 @@ class SAM2Long(QWidget):
         # Create the dialog (but don't show it yet)
         self.export_config_dialog = ExportConfigDialog(0, parent=self)
 
-        # Create a button to open the export configuration dialog
-        self.configure_export_btn = QPushButton("Configure Export...")
+        # Create export section group
+        export_group = QGroupBox("Export")
+        export_layout = QVBoxLayout()
+        export_group.setLayout(export_layout)
+
+        # Row 1: Export to COCO button (main action)
+        self.export_coco_btn = QPushButton("Export Project to COCO")
+        self.export_coco_btn.setEnabled(False)
+        self.export_coco_btn.setToolTip("Export all completed videos to COCO format")
+        self.export_coco_btn.setStyleSheet("background-color: #2196F3; color: white; font-weight: bold; padding: 8px;")
+        self.export_coco_btn.clicked.connect(self.export_to_coco)
+        export_layout.addWidget(self.export_coco_btn)
+
+        # Row 2: Configure export button (settings)
+        self.configure_export_btn = QPushButton("Configure Frame Export...")
         self.configure_export_btn.setToolTip("Configure export settings (frame selection, format options, etc.)")
         self.configure_export_btn.clicked.connect(self.open_export_config)
+        export_layout.addWidget(self.configure_export_btn)
 
-        # Insert button into main layout (before the final stretch/bottom section)
+        # Insert at the very bottom of main layout
         main_layout = self.layout()
         if main_layout is not None:
-            main_layout.insertWidget(main_layout.count() - 1, self.configure_export_btn)
+            main_layout.addWidget(export_group)
 
     def open_export_config(self):
         """Open the export configuration dialog."""
@@ -502,6 +612,372 @@ class SAM2Long(QWidget):
         if hasattr(self, "pipeline_object"):
             self.pipeline_object.reset()
             self.update_approved_display()
+
+    # ====================================================================
+    # Project Management Methods
+    # ====================================================================
+
+    def load_project_folder(self):
+        """Open file dialog to select and load a project folder."""
+        folder = QFileDialog.getExistingDirectory(
+            self,
+            "Select Project Folder",
+            os.path.expanduser("~"),
+        )
+
+        if not folder:
+            return
+
+        try:
+            # Load project
+            self.current_project = Project.load(folder)
+            self.current_video_index = 0
+
+            # Update UI
+            project_name = os.path.basename(folder)
+            stats = self.current_project.stats()
+            self.project_info_label.setText(
+                f"Project: {project_name} | Videos: {stats['total']} "
+                f"(Pending: {stats['pending']}, Completed: {stats['completed']})"
+            )
+
+            # Load first video
+            self.load_current_video()
+
+            # Enable navigation buttons
+            self.update_navigation_buttons()
+
+            # Enable export button
+            if hasattr(self, 'export_coco_btn'):
+                self.export_coco_btn.setEnabled(True)
+
+            show_info(f"Loaded project: {project_name}")
+
+        except Exception as e:
+            show_info(f"Error loading project: {str(e)}")
+
+    def load_current_video(self):
+        """Load the current video into napari with auto-created label layers."""
+        if self.current_project is None:
+            return
+
+        video_ids = self.current_project.video_ids()
+        if self.current_video_index >= len(video_ids):
+            show_info("No more videos in project")
+            return
+
+        # Save masks from previous video BEFORE clearing layers
+        if hasattr(self, '_previous_video_id') and self._previous_video_id:
+            self._save_masks_for_video(self._previous_video_id)
+
+        # Clear existing layers
+        self.viewer.layers.clear()
+
+        # Clear approved anchors when switching videos
+        if hasattr(self, "pipeline_object"):
+            self.pipeline_object.clear_approved_frames()
+            self.update_approved_display()
+
+        self.current_video_id = video_ids[self.current_video_index]
+
+        # Load frames
+        frames = self.current_project.load_frames(self.current_video_id)
+        metadata = self.current_project.load_metadata(self.current_video_id)
+
+        # Add image layer
+        self.viewer.add_image(frames, name=self.current_video_id)
+
+        # Auto-create label layers for each class
+        class_names = self.current_project.class_names()
+        for class_name in class_names:
+            # Create empty labels layer matching frame dimensions
+            labels_data = np.zeros(frames.shape[:3], dtype=np.uint16)
+
+            # Try to load existing masks if they exist
+            self._load_existing_masks(self.current_video_id, class_name, labels_data, metadata)
+
+            # Add labels layer
+            self.viewer.add_labels(labels_data, name=class_name)
+
+        # Update video info
+        manifest_entry = self.current_project.manifest["videos"][self.current_video_id]
+        self.video_info_label.setText(
+            f"Video {self.current_video_index + 1}/{len(video_ids)}: "
+            f"{manifest_entry['source']} | "
+            f"Status: {manifest_entry['status']} | "
+            f"Frames: {metadata['total_frames']}"
+        )
+
+        # Auto-check all label layers
+        self.populate_label_layers_list()
+        self._auto_check_all_labels()
+
+        # Update export frame list
+        self.update_export_frame_list()
+
+        # Track for saving later
+        self._previous_video_id = self.current_video_id
+
+    def _load_existing_masks(self, video_id, class_name, labels_data, metadata):
+        """Load existing masks from disk if they exist."""
+        masks_dir = self.current_project.masks_dir(video_id, class_name)
+
+        for frame_info in metadata["frames"]:
+            seq_idx = frame_info["seq"]
+            filename = frame_info["file"]
+            frame_stem = filename.rsplit(".", 1)[0]  # frame_00000
+            mask_path = masks_dir / f"{frame_stem}.png"
+
+            if mask_path.exists():
+                try:
+                    mask = read_indexed_mask(mask_path)
+                    labels_data[seq_idx] = mask
+                except Exception as e:
+                    print(f"Warning: Could not load mask {mask_path}: {e}")
+
+    def _auto_check_all_labels(self):
+        """Automatically check all label layers in the output list."""
+        for i in range(self.output_layers_list.count()):
+            item = self.output_layers_list.item(i)
+            item.setCheckState(Qt.Checked)
+
+    def save_current_masks(self):
+        """Save current label layers to disk as indexed masks."""
+        if self.current_project is None or self.current_video_id is None:
+            return
+        self._save_masks_for_video(self.current_video_id)
+
+    def _save_masks_for_video(self, video_id):
+        """Save masks for a specific video ID."""
+        if self.current_project is None:
+            return
+
+        metadata = self.current_project.load_metadata(video_id)
+        class_names = self.current_project.class_names()
+
+        for class_name in class_names:
+            # Get the label layer
+            try:
+                layer = self.viewer.layers[class_name]
+                if not isinstance(layer, napari.layers.Labels):
+                    continue
+            except KeyError:
+                continue
+
+            masks_dir = self.current_project.masks_dir(video_id, class_name)
+            masks_dir.mkdir(parents=True, exist_ok=True)
+
+            # Save each frame
+            for frame_info in metadata["frames"]:
+                seq_idx = frame_info["seq"]
+                filename = frame_info["file"]
+                frame_stem = filename.rsplit(".", 1)[0]  # frame_00000
+
+                # Bounds check to avoid IndexError
+                if seq_idx >= layer.data.shape[0]:
+                    continue
+
+                mask = layer.data[seq_idx]
+                mask_path = masks_dir / f"{frame_stem}.png"
+
+                # Only save if mask has data
+                if mask.max() > 0:
+                    write_indexed_mask(mask, mask_path)
+
+    def next_video(self):
+        """Load next video in the project."""
+        if self.current_project is None:
+            return
+
+        # Confirm before switching
+        reply = QMessageBox.question(
+            self,
+            "Save and Continue?",
+            "Save current masks and move to next video?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        video_ids = self.current_project.video_ids()
+        if self.current_video_index < len(video_ids) - 1:
+            self.current_video_index += 1
+            self.load_current_video()
+            self.update_navigation_buttons()
+
+    def prev_video(self):
+        """Load previous video in the project."""
+        if self.current_project is None:
+            return
+
+        # Confirm before switching
+        reply = QMessageBox.question(
+            self,
+            "Save and Continue?",
+            "Save current masks and move to previous video?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        if self.current_video_index > 0:
+            self.current_video_index -= 1
+            self.load_current_video()
+            self.update_navigation_buttons()
+
+    def mark_complete_and_next(self):
+        """Mark current video as completed and load next."""
+        if self.current_project is None or self.current_video_id is None:
+            return
+
+        # Check if there are any masks
+        has_masks = self._check_has_masks()
+
+        if not has_masks:
+            reply = QMessageBox.warning(
+                self,
+                "No Masks Found",
+                "No masks detected in any label layer. Mark as complete anyway?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Confirm completion
+        reply = QMessageBox.question(
+            self,
+            "Mark Complete?",
+            f"Mark video '{self.current_video_id}' as complete and save masks?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Save current masks
+        self.save_current_masks()
+
+        # Update status
+        self.current_project.update_status(self.current_video_id, "completed")
+
+        # Move to next
+        video_ids = self.current_project.video_ids()
+        if self.current_video_index < len(video_ids) - 1:
+            self.current_video_index += 1
+            self.load_current_video()
+        else:
+            show_info("All videos completed!")
+
+        self.update_navigation_buttons()
+
+        # Update project info
+        stats = self.current_project.stats()
+        project_name = os.path.basename(str(self.current_project.root))
+        self.project_info_label.setText(
+            f"Project: {project_name} | Videos: {stats['total']} "
+            f"(Pending: {stats['pending']}, Completed: {stats['completed']})"
+        )
+
+    def _check_has_masks(self):
+        """Check if any label layers have non-zero masks."""
+        class_names = self.current_project.class_names()
+        for class_name in class_names:
+            try:
+                layer = self.viewer.layers[class_name]
+                if isinstance(layer, napari.layers.Labels):
+                    if layer.data.max() > 0:
+                        return True
+            except KeyError:
+                continue
+        return False
+
+    def update_navigation_buttons(self):
+        """Update enabled state of navigation buttons."""
+        if self.current_project is None:
+            self.prev_video_btn.setEnabled(False)
+            self.next_video_btn.setEnabled(False)
+            self.complete_next_btn.setEnabled(False)
+            return
+
+        video_ids = self.current_project.video_ids()
+
+        self.prev_video_btn.setEnabled(self.current_video_index > 0)
+        self.next_video_btn.setEnabled(self.current_video_index < len(video_ids) - 1)
+        self.complete_next_btn.setEnabled(True)
+
+    def export_to_coco(self):
+        """Export project to COCO format."""
+        if self.current_project is None:
+            show_info("No project loaded")
+            return
+
+        # Save current video masks first
+        if self.current_video_id:
+            self.save_current_masks()
+
+        # Ask which videos to export
+        stats = self.current_project.stats()
+        reply = QMessageBox.question(
+            self,
+            "Export to COCO",
+            f"Export all videos to COCO format?\n\n"
+            f"Total videos: {stats['total']}\n"
+            f"Completed: {stats['completed']}\n"
+            f"Pending: {stats['pending']}\n\n"
+            f"Export all or only completed?",
+            QMessageBox.Yes | QMessageBox.No | QMessageBox.Cancel,
+            QMessageBox.Yes
+        )
+
+        if reply == QMessageBox.Cancel:
+            return
+
+        # Determine which videos to export
+        if reply == QMessageBox.No:
+            # Export only completed
+            video_ids = [
+                vid for vid, info in self.current_project.manifest["videos"].items()
+                if info["status"] == "completed"
+            ]
+            if not video_ids:
+                show_info("No completed videos to export")
+                return
+        else:
+            # Export all
+            video_ids = None
+
+        try:
+            from .ingestion.coco_export import COCOExporter
+
+            exporter = COCOExporter(self.current_project)
+            output_path = str(self.current_project.export_dir() / "annotations.json")
+
+            coco = exporter.export(output_path=output_path, video_ids=video_ids)
+
+            show_info(
+                f"Export complete!\n\n"
+                f"Images: {len(coco['images'])}\n"
+                f"Annotations: {len(coco['annotations'])}\n"
+                f"Categories: {len(coco['categories'])}\n\n"
+                f"Saved to: {output_path}"
+            )
+
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Export Failed",
+                f"Error during export:\n{str(e)}"
+            )
+
+    # ====================================================================
+    # End Project Management Methods
+    # ====================================================================
 
     def delete_source_dir(self):
         """Deletes the temporary source frame directory when Napari closes."""

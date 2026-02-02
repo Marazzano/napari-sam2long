@@ -312,6 +312,7 @@ class SAM2Long_pipeline(QWidget):
             # Fall back to current frame if no frames approved
             current_frame = int(self.viewer.dims.current_step[0])
             anchors = [current_frame]
+            show_info(f"No approved anchors. Using current frame ({current_frame}) as anchor.")
             print(f"No approved frames. Using current frame {current_frame} as anchor.")
 
         # Validate anchors

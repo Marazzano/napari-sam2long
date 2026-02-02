@@ -46,6 +46,11 @@ testing = [
 [project.entry-points."napari.manifest"]
 napari-sam2long = "napari_sam2long:napari.yaml"
 
+[project.scripts]
+napari-sam2long-organize = "napari_sam2long.ingestion.cli:organize_main"
+napari-sam2long-ingest = "napari_sam2long.ingestion.cli:ingest_main"
+napari-sam2long-export-coco = "napari_sam2long.ingestion.cli:export_main"
+
 [project.urls]
 "Homepage" = "https://github.com/maihanhoang/napari-sam2long"
 "Bug Tracker" = "https://github.com/maihanhoang/napari-sam2long/issues"
