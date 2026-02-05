@@ -5,6 +5,7 @@ from .config import ProjectConfig, IngestionConfig
 from .organizer import ProjectOrganizer
 from .ingester import VideoIngester
 from .coco_export import COCOExporter
+from .run_manager import RunManager
 
 __all__ = [
     "Project",
@@ -13,5 +14,6 @@ __all__ = [
     "ProjectOrganizer",
     "VideoIngester",
     "COCOExporter",
+    "RunManager",
 ]
 # Note: mask_io NOT exported - internal utility
