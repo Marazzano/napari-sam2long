@@ -12,29 +12,26 @@ from .mask_io import read_indexed_mask, split_indexed_mask
 
 def mask_to_rle(binary_mask: np.ndarray) -> Dict[str, Any]:
     """
-    Convert binary mask to uncompressed RLE.
+    Convert binary mask to compressed RLE using pycocotools.
 
     Args:
         binary_mask: Boolean or binary numpy array
 
     Returns:
-        RLE dict with 'counts' and 'size'
+        RLE dict with 'counts' (bytes) and 'size' in COCO-compatible format
     """
-    flat = binary_mask.flatten(order='F')
-    runs = []
-    prev = 0
-    count = 0
-    for val in flat:
-        if val != prev:
-            runs.append(count)
-            count = 1
-            prev = val
-        else:
-            count += 1
-    runs.append(count)
-    if flat[0]:
-        runs.insert(0, 0)
-    return {"counts": runs, "size": list(binary_mask.shape)}
+    from pycocotools import mask as mask_utils
+
+    # Ensure mask is in the correct format (uint8, Fortran order)
+    binary_mask_fortran = np.asfortranarray(binary_mask.astype(np.uint8))
+
+    # Encode using pycocotools for proper COCO compatibility
+    rle = mask_utils.encode(binary_mask_fortran)
+
+    # Decode bytes to string for JSON serialization
+    rle['counts'] = rle['counts'].decode('utf-8')
+
+    return rle
 
 
 def compute_bbox(mask: np.ndarray) -> List[float]:
