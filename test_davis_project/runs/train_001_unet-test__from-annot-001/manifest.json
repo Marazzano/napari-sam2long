@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "id": 1,
+  "type": "train",
+  "label": "unet-test",
+  "name": "train_001_unet-test__from-annot-001",
+  "created_at": "2026-02-06T04:00:20.850217+00:00",
+  "parents": [
+    {
+      "type": "annot",
+      "id": 1
+    }
+  ],
+  "metadata": {
+    "epochs": 2,
+    "test": true
+  },
+  "final_metrics": {
+    "final_epoch": 2,
+    "best_val_loss": 0.4425,
+    "final_val_loss": 0.4425,
+    "final_val_iou": 0.09,
+    "best_checkpoint": "test_davis_project/runs/train_001_unet-test__from-annot-001/checkpoints/best.pth",
+    "history": [
+      {
+        "epoch": 1,
+        "train_loss": 0.2114,
+        "val_loss": 0.5165,
+        "val_iou": 0.0077,
+        "lr": 0.001
+      },
+      {
+        "epoch": 2,
+        "train_loss": 0.0758,
+        "val_loss": 0.4425,
+        "val_iou": 0.09,
+        "lr": 0.001
+      }
+    ]
+  }
+}

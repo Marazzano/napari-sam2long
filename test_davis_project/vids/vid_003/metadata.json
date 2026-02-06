@@ -1,0 +1,414 @@
+{
+  "frames": [
+    {
+      "seq": 0,
+      "orig": 0,
+      "file": "frame_00000.jpg"
+    },
+    {
+      "seq": 1,
+      "orig": 1,
+      "file": "frame_00001.jpg"
+    },
+    {
+      "seq": 2,
+      "orig": 2,
+      "file": "frame_00002.jpg"
+    },
+    {
+      "seq": 3,
+      "orig": 3,
+      "file": "frame_00003.jpg"
+    },
+    {
+      "seq": 4,
+      "orig": 4,
+      "file": "frame_00004.jpg"
+    },
+    {
+      "seq": 5,
+      "orig": 5,
+      "file": "frame_00005.jpg"
+    },
+    {
+      "seq": 6,
+      "orig": 6,
+      "file": "frame_00006.jpg"
+    },
+    {
+      "seq": 7,
+      "orig": 7,
+      "file": "frame_00007.jpg"
+    },
+    {
+      "seq": 8,
+      "orig": 8,
+      "file": "frame_00008.jpg"
+    },
+    {
+      "seq": 9,
+      "orig": 9,
+      "file": "frame_00009.jpg"
+    },
+    {
+      "seq": 10,
+      "orig": 10,
+      "file": "frame_00010.jpg"
+    },
+    {
+      "seq": 11,
+      "orig": 11,
+      "file": "frame_00011.jpg"
+    },
+    {
+      "seq": 12,
+      "orig": 12,
+      "file": "frame_00012.jpg"
+    },
+    {
+      "seq": 13,
+      "orig": 13,
+      "file": "frame_00013.jpg"
+    },
+    {
+      "seq": 14,
+      "orig": 14,
+      "file": "frame_00014.jpg"
+    },
+    {
+      "seq": 15,
+      "orig": 15,
+      "file": "frame_00015.jpg"
+    },
+    {
+      "seq": 16,
+      "orig": 16,
+      "file": "frame_00016.jpg"
+    },
+    {
+      "seq": 17,
+      "orig": 17,
+      "file": "frame_00017.jpg"
+    },
+    {
+      "seq": 18,
+      "orig": 18,
+      "file": "frame_00018.jpg"
+    },
+    {
+      "seq": 19,
+      "orig": 19,
+      "file": "frame_00019.jpg"
+    },
+    {
+      "seq": 20,
+      "orig": 20,
+      "file": "frame_00020.jpg"
+    },
+    {
+      "seq": 21,
+      "orig": 21,
+      "file": "frame_00021.jpg"
+    },
+    {
+      "seq": 22,
+      "orig": 22,
+      "file": "frame_00022.jpg"
+    },
+    {
+      "seq": 23,
+      "orig": 23,
+      "file": "frame_00023.jpg"
+    },
+    {
+      "seq": 24,
+      "orig": 24,
+      "file": "frame_00024.jpg"
+    },
+    {
+      "seq": 25,
+      "orig": 25,
+      "file": "frame_00025.jpg"
+    },
+    {
+      "seq": 26,
+      "orig": 26,
+      "file": "frame_00026.jpg"
+    },
+    {
+      "seq": 27,
+      "orig": 27,
+      "file": "frame_00027.jpg"
+    },
+    {
+      "seq": 28,
+      "orig": 28,
+      "file": "frame_00028.jpg"
+    },
+    {
+      "seq": 29,
+      "orig": 29,
+      "file": "frame_00029.jpg"
+    },
+    {
+      "seq": 30,
+      "orig": 30,
+      "file": "frame_00030.jpg"
+    },
+    {
+      "seq": 31,
+      "orig": 31,
+      "file": "frame_00031.jpg"
+    },
+    {
+      "seq": 32,
+      "orig": 32,
+      "file": "frame_00032.jpg"
+    },
+    {
+      "seq": 33,
+      "orig": 33,
+      "file": "frame_00033.jpg"
+    },
+    {
+      "seq": 34,
+      "orig": 34,
+      "file": "frame_00034.jpg"
+    },
+    {
+      "seq": 35,
+      "orig": 35,
+      "file": "frame_00035.jpg"
+    },
+    {
+      "seq": 36,
+      "orig": 36,
+      "file": "frame_00036.jpg"
+    },
+    {
+      "seq": 37,
+      "orig": 37,
+      "file": "frame_00037.jpg"
+    },
+    {
+      "seq": 38,
+      "orig": 38,
+      "file": "frame_00038.jpg"
+    },
+    {
+      "seq": 39,
+      "orig": 39,
+      "file": "frame_00039.jpg"
+    },
+    {
+      "seq": 40,
+      "orig": 40,
+      "file": "frame_00040.jpg"
+    },
+    {
+      "seq": 41,
+      "orig": 41,
+      "file": "frame_00041.jpg"
+    },
+    {
+      "seq": 42,
+      "orig": 42,
+      "file": "frame_00042.jpg"
+    },
+    {
+      "seq": 43,
+      "orig": 43,
+      "file": "frame_00043.jpg"
+    },
+    {
+      "seq": 44,
+      "orig": 44,
+      "file": "frame_00044.jpg"
+    },
+    {
+      "seq": 45,
+      "orig": 45,
+      "file": "frame_00045.jpg"
+    },
+    {
+      "seq": 46,
+      "orig": 46,
+      "file": "frame_00046.jpg"
+    },
+    {
+      "seq": 47,
+      "orig": 47,
+      "file": "frame_00047.jpg"
+    },
+    {
+      "seq": 48,
+      "orig": 48,
+      "file": "frame_00048.jpg"
+    },
+    {
+      "seq": 49,
+      "orig": 49,
+      "file": "frame_00049.jpg"
+    },
+    {
+      "seq": 50,
+      "orig": 50,
+      "file": "frame_00050.jpg"
+    },
+    {
+      "seq": 51,
+      "orig": 51,
+      "file": "frame_00051.jpg"
+    },
+    {
+      "seq": 52,
+      "orig": 52,
+      "file": "frame_00052.jpg"
+    },
+    {
+      "seq": 53,
+      "orig": 53,
+      "file": "frame_00053.jpg"
+    },
+    {
+      "seq": 54,
+      "orig": 54,
+      "file": "frame_00054.jpg"
+    },
+    {
+      "seq": 55,
+      "orig": 55,
+      "file": "frame_00055.jpg"
+    },
+    {
+      "seq": 56,
+      "orig": 56,
+      "file": "frame_00056.jpg"
+    },
+    {
+      "seq": 57,
+      "orig": 57,
+      "file": "frame_00057.jpg"
+    },
+    {
+      "seq": 58,
+      "orig": 58,
+      "file": "frame_00058.jpg"
+    },
+    {
+      "seq": 59,
+      "orig": 59,
+      "file": "frame_00059.jpg"
+    },
+    {
+      "seq": 60,
+      "orig": 60,
+      "file": "frame_00060.jpg"
+    },
+    {
+      "seq": 61,
+      "orig": 61,
+      "file": "frame_00061.jpg"
+    },
+    {
+      "seq": 62,
+      "orig": 62,
+      "file": "frame_00062.jpg"
+    },
+    {
+      "seq": 63,
+      "orig": 63,
+      "file": "frame_00063.jpg"
+    },
+    {
+      "seq": 64,
+      "orig": 64,
+      "file": "frame_00064.jpg"
+    },
+    {
+      "seq": 65,
+      "orig": 65,
+      "file": "frame_00065.jpg"
+    },
+    {
+      "seq": 66,
+      "orig": 66,
+      "file": "frame_00066.jpg"
+    },
+    {
+      "seq": 67,
+      "orig": 67,
+      "file": "frame_00067.jpg"
+    },
+    {
+      "seq": 68,
+      "orig": 68,
+      "file": "frame_00068.jpg"
+    },
+    {
+      "seq": 69,
+      "orig": 69,
+      "file": "frame_00069.jpg"
+    },
+    {
+      "seq": 70,
+      "orig": 70,
+      "file": "frame_00070.jpg"
+    },
+    {
+      "seq": 71,
+      "orig": 71,
+      "file": "frame_00071.jpg"
+    },
+    {
+      "seq": 72,
+      "orig": 72,
+      "file": "frame_00072.jpg"
+    },
+    {
+      "seq": 73,
+      "orig": 73,
+      "file": "frame_00073.jpg"
+    },
+    {
+      "seq": 74,
+      "orig": 74,
+      "file": "frame_00074.jpg"
+    },
+    {
+      "seq": 75,
+      "orig": 75,
+      "file": "frame_00075.jpg"
+    },
+    {
+      "seq": 76,
+      "orig": 76,
+      "file": "frame_00076.jpg"
+    },
+    {
+      "seq": 77,
+      "orig": 77,
+      "file": "frame_00077.jpg"
+    },
+    {
+      "seq": 78,
+      "orig": 78,
+      "file": "frame_00078.jpg"
+    },
+    {
+      "seq": 79,
+      "orig": 79,
+      "file": "frame_00079.jpg"
+    }
+  ],
+  "step_size": 1,
+  "reverse": false,
+  "total_frames": 80,
+  "original_total": 80,
+  "fps": 24,
+  "resolution": [
+    854,
+    480
+  ],
+  "source": "bmx-trees"
+}

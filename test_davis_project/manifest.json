@@ -1,0 +1,22 @@
+{
+  "videos": {
+    "vid_001": {
+      "source": "bear",
+      "status": "completed",
+      "frame_count": 82,
+      "added_at": "2026-02-06T04:00:04.884975+00:00"
+    },
+    "vid_002": {
+      "source": "blackswan",
+      "status": "completed",
+      "frame_count": 50,
+      "added_at": "2026-02-06T04:00:04.943642+00:00"
+    },
+    "vid_003": {
+      "source": "bmx-trees",
+      "status": "completed",
+      "frame_count": 80,
+      "added_at": "2026-02-06T04:00:05.031899+00:00"
+    }
+  }
+}

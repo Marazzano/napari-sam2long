@@ -1,0 +1,18 @@
+{
+  "source_folder": "/Users/marazzanocolon/Desktop/test_embryo_vids",
+  "output_folder": "/Users/marazzanocolon/coding/napari-sam2long/embryo_project",
+  "class_names": [
+    "head",
+    "yolk"
+  ],
+  "step_size": 10,
+  "reverse": true,
+  "image_format": "jpg",
+  "image_quality": 95,
+  "video_extensions": [
+    ".mp4",
+    ".avi",
+    ".mov",
+    ".mkv"
+  ]
+}

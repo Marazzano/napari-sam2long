@@ -1,0 +1,189 @@
+{
+  "frames": [
+    {
+      "seq": 0,
+      "orig": 347,
+      "file": "frame_00000.jpg"
+    },
+    {
+      "seq": 1,
+      "orig": 337,
+      "file": "frame_00001.jpg"
+    },
+    {
+      "seq": 2,
+      "orig": 327,
+      "file": "frame_00002.jpg"
+    },
+    {
+      "seq": 3,
+      "orig": 317,
+      "file": "frame_00003.jpg"
+    },
+    {
+      "seq": 4,
+      "orig": 307,
+      "file": "frame_00004.jpg"
+    },
+    {
+      "seq": 5,
+      "orig": 297,
+      "file": "frame_00005.jpg"
+    },
+    {
+      "seq": 6,
+      "orig": 287,
+      "file": "frame_00006.jpg"
+    },
+    {
+      "seq": 7,
+      "orig": 277,
+      "file": "frame_00007.jpg"
+    },
+    {
+      "seq": 8,
+      "orig": 267,
+      "file": "frame_00008.jpg"
+    },
+    {
+      "seq": 9,
+      "orig": 257,
+      "file": "frame_00009.jpg"
+    },
+    {
+      "seq": 10,
+      "orig": 247,
+      "file": "frame_00010.jpg"
+    },
+    {
+      "seq": 11,
+      "orig": 237,
+      "file": "frame_00011.jpg"
+    },
+    {
+      "seq": 12,
+      "orig": 227,
+      "file": "frame_00012.jpg"
+    },
+    {
+      "seq": 13,
+      "orig": 217,
+      "file": "frame_00013.jpg"
+    },
+    {
+      "seq": 14,
+      "orig": 207,
+      "file": "frame_00014.jpg"
+    },
+    {
+      "seq": 15,
+      "orig": 197,
+      "file": "frame_00015.jpg"
+    },
+    {
+      "seq": 16,
+      "orig": 187,
+      "file": "frame_00016.jpg"
+    },
+    {
+      "seq": 17,
+      "orig": 177,
+      "file": "frame_00017.jpg"
+    },
+    {
+      "seq": 18,
+      "orig": 167,
+      "file": "frame_00018.jpg"
+    },
+    {
+      "seq": 19,
+      "orig": 157,
+      "file": "frame_00019.jpg"
+    },
+    {
+      "seq": 20,
+      "orig": 147,
+      "file": "frame_00020.jpg"
+    },
+    {
+      "seq": 21,
+      "orig": 137,
+      "file": "frame_00021.jpg"
+    },
+    {
+      "seq": 22,
+      "orig": 127,
+      "file": "frame_00022.jpg"
+    },
+    {
+      "seq": 23,
+      "orig": 117,
+      "file": "frame_00023.jpg"
+    },
+    {
+      "seq": 24,
+      "orig": 107,
+      "file": "frame_00024.jpg"
+    },
+    {
+      "seq": 25,
+      "orig": 97,
+      "file": "frame_00025.jpg"
+    },
+    {
+      "seq": 26,
+      "orig": 87,
+      "file": "frame_00026.jpg"
+    },
+    {
+      "seq": 27,
+      "orig": 77,
+      "file": "frame_00027.jpg"
+    },
+    {
+      "seq": 28,
+      "orig": 67,
+      "file": "frame_00028.jpg"
+    },
+    {
+      "seq": 29,
+      "orig": 57,
+      "file": "frame_00029.jpg"
+    },
+    {
+      "seq": 30,
+      "orig": 47,
+      "file": "frame_00030.jpg"
+    },
+    {
+      "seq": 31,
+      "orig": 37,
+      "file": "frame_00031.jpg"
+    },
+    {
+      "seq": 32,
+      "orig": 27,
+      "file": "frame_00032.jpg"
+    },
+    {
+      "seq": 33,
+      "orig": 17,
+      "file": "frame_00033.jpg"
+    },
+    {
+      "seq": 34,
+      "orig": 7,
+      "file": "frame_00034.jpg"
+    }
+  ],
+  "step_size": 10,
+  "reverse": true,
+  "total_frames": 35,
+  "original_total": 348,
+  "fps": 5.0,
+  "resolution": [
+    1152,
+    2188
+  ],
+  "source": "20251119_A05.mp4"
+}

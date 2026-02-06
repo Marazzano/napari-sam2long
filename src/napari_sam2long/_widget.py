@@ -162,17 +162,30 @@ class SAM2Long(QWidget):
         anchor_layout = QVBoxLayout()
         anchor_group.setLayout(anchor_layout)
 
-        # Button row 1: Approve/Unapprove
+        # Button row 1: Add/Remove Anchor
         button_row1 = QHBoxLayout()
-        self.approve_btn = QPushButton("Approve")
+        self.approve_btn = QPushButton("Add Anchor")
         self.approve_btn.setToolTip("Mark current frame as anchor for propagation")
 
-        self.unapprove_btn = QPushButton("Unapprove")
-        self.unapprove_btn.setToolTip("Remove current frame from approved anchors")
+        self.unapprove_btn = QPushButton("Remove Anchor")
+        self.unapprove_btn.setToolTip("Remove current frame from anchors")
 
         button_row1.addWidget(self.approve_btn)
         button_row1.addWidget(self.unapprove_btn)
         anchor_layout.addLayout(button_row1)
+
+        # Button row 1b: Approve/Unapprove frame for export
+        approve_row = QHBoxLayout()
+        self.approve_frame_btn = QPushButton("Approve Frame")
+        self.approve_frame_btn.setToolTip("Approve current frame for export")
+        self.approve_frame_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+
+        self.unapprove_frame_btn = QPushButton("Unapprove Frame")
+        self.unapprove_frame_btn.setToolTip("Remove current frame from export approval")
+
+        approve_row.addWidget(self.approve_frame_btn)
+        approve_row.addWidget(self.unapprove_frame_btn)
+        anchor_layout.addLayout(approve_row)
 
         # Button row 2: Clear anchors and clear current frame
         button_row2 = QHBoxLayout()
@@ -188,7 +201,7 @@ class SAM2Long(QWidget):
         anchor_layout.addLayout(button_row2)
 
         # Approved frames display
-        self.approved_list_label = QLabel("Approved: []")
+        self.approved_list_label = QLabel("Anchors: []")
         self.approved_list_label.setWordWrap(True)
         self.approved_list_label.setStyleSheet("font-size: 9pt;")
         anchor_layout.addWidget(self.approved_list_label)
@@ -203,6 +216,8 @@ class SAM2Long(QWidget):
         self.unapprove_btn.clicked.connect(self.unapprove_current_frame)
         self.clear_approved_btn.clicked.connect(self.clear_approved)
         self.clear_frame_btn.clicked.connect(self.clear_current_frame)
+        self.approve_frame_btn.clicked.connect(self.approve_frame_for_export)
+        self.unapprove_frame_btn.clicked.connect(self.unapprove_frame_for_export)
 
         # Connect frame change to update status HUD
         self.viewer.dims.events.current_step.connect(self.update_status_hud)
@@ -245,6 +260,32 @@ class SAM2Long(QWidget):
                 show_info(f"Frame {t} is not approved.")
         else:
             show_info("Please initialize pipeline first.")
+
+    def approve_frame_for_export(self):
+        """Approve current frame for export."""
+        t = int(self.viewer.dims.current_step[0])
+        if hasattr(self, 'export_config_dialog'):
+            item = self.export_config_dialog.export_panel.frame_items.get(t)
+            if item is not None:
+                item.setCheckState(Qt.Checked)
+                show_info(f"Frame {t} approved for export.")
+            else:
+                show_info(f"Frame {t} not in export list. Load a video first.")
+        else:
+            show_info("Export not configured yet.")
+
+    def unapprove_frame_for_export(self):
+        """Remove current frame from export approval."""
+        t = int(self.viewer.dims.current_step[0])
+        if hasattr(self, 'export_config_dialog'):
+            item = self.export_config_dialog.export_panel.frame_items.get(t)
+            if item is not None:
+                item.setCheckState(Qt.Unchecked)
+                show_info(f"Frame {t} removed from export.")
+            else:
+                show_info(f"Frame {t} not in export list.")
+        else:
+            show_info("Export not configured yet.")
 
     def clear_approved(self):
         """Clear all approved anchor frames."""
@@ -289,9 +330,9 @@ class SAM2Long(QWidget):
         """Update the display label showing approved frames."""
         if hasattr(self, "pipeline_object"):
             frames = self.pipeline_object.get_approved_frames_sorted()
-            self.approved_list_label.setText(f"Approved: {frames}")
+            self.approved_list_label.setText(f"Anchors: {frames}")
         else:
-            self.approved_list_label.setText("Approved: []")
+            self.approved_list_label.setText("Anchors: []")
 
     def update_status_hud(self, event=None):
         """Update the status HUD showing current editing state."""
@@ -310,11 +351,18 @@ class SAM2Long(QWidget):
         layer = active_layer
         label = layer.selected_label
 
-        approved = frame in self.pipeline_object.approved_frames
-        approved_str = "✓ APPROVED" if approved else ""
-        self.status_hud.setText(
-            f"Layer: {layer.name} | Label: {label} | Frame: {frame} {approved_str}"
-        )
+        is_anchor = frame in self.pipeline_object.approved_frames
+        anchor_str = "⚓ ANCHOR" if is_anchor else ""
+
+        is_exported = hasattr(self, 'export_config_dialog') and frame in self.export_config_dialog.export_frames
+        export_str = "✓ APPROVED" if is_exported else ""
+
+        status_parts = [f"Layer: {layer.name}", f"Label: {label}", f"Frame: {frame}"]
+        if anchor_str:
+            status_parts.append(anchor_str)
+        if export_str:
+            status_parts.append(export_str)
+        self.status_hud.setText(" | ".join(status_parts))
 
     def _setup_export_curation_ui(self):
         """
@@ -334,9 +382,9 @@ class SAM2Long(QWidget):
         # Row 1: Export actions
         export_actions = QHBoxLayout()
 
-        self.export_coco_btn = QPushButton("Export")
+        self.export_coco_btn = QPushButton("Export Approved")
         self.export_coco_btn.setEnabled(False)
-        self.export_coco_btn.setToolTip("Export current video to COCO format")
+        self.export_coco_btn.setToolTip("Export approved frames to COCO format")
         self.export_coco_btn.setStyleSheet(
             "background-color: #2196F3; color: white; font-weight: bold; padding: 8px;"
         )
@@ -357,8 +405,8 @@ class SAM2Long(QWidget):
         export_layout.addLayout(export_actions)
 
         # Row 2: Configure export button (settings)
-        self.configure_export_btn = QPushButton("Configure Frame Export...")
-        self.configure_export_btn.setToolTip("Configure export settings (frame selection, format options, etc.)")
+        self.configure_export_btn = QPushButton("Export Frames...")
+        self.configure_export_btn.setToolTip("Open frame selection for export configuration")
         self.configure_export_btn.clicked.connect(self.open_export_config)
         export_layout.addWidget(self.configure_export_btn)
 

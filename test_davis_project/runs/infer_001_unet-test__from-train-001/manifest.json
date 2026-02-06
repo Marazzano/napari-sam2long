@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "id": 1,
+  "type": "infer",
+  "label": "unet-test",
+  "name": "infer_001_unet-test__from-train-001",
+  "created_at": "2026-02-06T04:00:28.109087+00:00",
+  "parents": [
+    {
+      "type": "train",
+      "id": 1
+    }
+  ],
+  "metadata": {}
+}

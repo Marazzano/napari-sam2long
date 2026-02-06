@@ -441,14 +441,12 @@ class SAM2Long_pipeline(QWidget):
 
     def reset(self):
         self.predictor.reset_state(self.inference_state)
-        label_layer_name = self.mwo.output_layers_combo.currentText()
-        if (
-            label_layer_name is not None and label_layer_name != ""
-        ):  ### Reset label layer if label is not empty
-            label_layer = self.viewer.layers[label_layer_name]
-            label_layer_data = label_layer.data
-            zero_mask = np.zeros(label_layer_data.shape, dtype=np.int32)
-            label_layer.data = zero_mask
+        for label_layer_name in self.mwo.get_checked_label_layers():
+            if label_layer_name in self.viewer.layers:
+                label_layer = self.viewer.layers[label_layer_name]
+                label_layer_data = label_layer.data
+                zero_mask = np.zeros(label_layer_data.shape, dtype=np.int32)
+                label_layer.data = zero_mask
 
         self.prompts = {}  ### Empty prompts when resetting
         self.approved_frames.clear()  ### Clear approved frames on reset

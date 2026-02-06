@@ -225,6 +225,15 @@ class ExportConfigDialog(QDialog):
         # Future: Add more export configuration options here
         # e.g., COCO format options, export path, etc.
 
+        # Approve & Export button
+        self.approve_export_btn = QPushButton("Approve & Export")
+        self.approve_export_btn.setToolTip("Approve all selected frames and trigger export")
+        self.approve_export_btn.setStyleSheet(
+            "background-color: #4CAF50; color: white; font-weight: bold; padding: 8px;"
+        )
+        self.approve_export_btn.clicked.connect(self._approve_and_export)
+        main_layout.addWidget(self.approve_export_btn)
+
         # Dialog buttons
         button_box = QDialogButtonBox(QDialogButtonBox.Close)
         button_box.rejected.connect(self.accept)  # Close button
@@ -238,6 +247,13 @@ class ExportConfigDialog(QDialog):
             total_frames: Number of frames in the current video layer
         """
         self.export_panel.set_total_frames(total_frames)
+
+    def _approve_and_export(self):
+        """Approve current selection and trigger export via parent widget."""
+        parent = self.parent()
+        if parent and hasattr(parent, 'export_to_coco'):
+            self.accept()  # Close dialog
+            parent.export_to_coco()  # Trigger export
 
     @property
     def export_frames(self):
