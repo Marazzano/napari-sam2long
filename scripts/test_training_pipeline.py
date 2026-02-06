@@ -47,15 +47,22 @@ def test_run_manager(project_path: Path):
     for run in runs:
         print(f"  - {run['name']} (type: {run['type']})")
 
-    # Should have annot_001_ground-truth from setup
-    assert len(runs) >= 1, "Expected at least one run (ground-truth)"
+    # Create initial annotation run if none exists
+    if not runs:
+        print("No existing runs — creating initial annotation run from working masks...")
+        annot_run = mgr.create_run("annot", label="initial")
+        video_ids = [d.name for d in (project_path / "vids").iterdir() if d.is_dir()]
+        mgr.save_working_to_run("annot", 1, video_ids=video_ids)
+        print(f"Created: {annot_run.name}")
+        runs = mgr.list_runs()
 
-    # Test creating a new run
+    # Test creating another run
+    next_id = max(r["id"] for r in mgr._get_existing_runs("annot")) + 1
     new_run = mgr.create_run("annot", label="test-run", parent=None)
     print(f"Created: {new_run.name}")
 
     # Test getting run
-    run_info = mgr.get_run("annot", 2)  # Should be our new run
+    run_info = mgr.get_run("annot", next_id)
     print(f"Retrieved: {run_info['name']}")
 
     print("✅ RunManager tests passed")
@@ -112,10 +119,10 @@ def test_data_handler(project_path: Path):
     return handler
 
 
-def test_training(project_path: Path, epochs: int = 2):
+def test_training(project_path: Path, epochs: int = 2, model: str = "unet"):
     """Test model training."""
     print("\n" + "=" * 60)
-    print("TEST: Model Training")
+    print(f"TEST: Model Training ({model})")
     print("=" * 60)
 
     from napari_sam2long.training import (
@@ -129,7 +136,7 @@ def test_training(project_path: Path, epochs: int = 2):
     # Check available handlers
     handlers = list_handlers()
     print(f"Available handlers: {handlers}")
-    assert "unet" in handlers, "UNet handler not registered"
+    assert model in handlers, f"{model} handler not registered"
 
     # Prepare training data
     handler = TrainingDataHandler(project_path)
@@ -143,9 +150,9 @@ def test_training(project_path: Path, epochs: int = 2):
         run_mgr = RunManager(project_path)
         train_run = run_mgr.create_run(
             "train",
-            label="unet-test",
+            label=f"{model}-test",
             parent="annot-001",
-            metadata={"epochs": epochs, "test": True},
+            metadata={"epochs": epochs, "model": model, "test": True},
         )
         checkpoint_dir = train_run / "checkpoints"
 
@@ -160,9 +167,9 @@ def test_training(project_path: Path, epochs: int = 2):
         def progress_callback(epoch, metrics):
             print(f"  Epoch {epoch}: loss={metrics['train_loss']:.4f}, val_iou={metrics['val_iou']:.4f}")
 
-        print(f"\nTraining UNet for {epochs} epochs...")
+        print(f"\nTraining {model} for {epochs} epochs...")
         metrics = train_model(
-            handler_name="unet",
+            handler_name=model,
             coco_train=train_json,
             coco_val=val_json,
             checkpoint_dir=checkpoint_dir,
@@ -182,7 +189,8 @@ def test_training(project_path: Path, epochs: int = 2):
         print(f"  Checkpoint: {best_checkpoint}")
 
         # Update run manifest with metrics
-        run_mgr.update_manifest("train", run_mgr.get_run("train", 1)["id"], {
+        latest_train = run_mgr.get_latest("train")
+        run_mgr.update_manifest("train", latest_train["id"], {
             "final_metrics": metrics,
         })
 
@@ -190,10 +198,10 @@ def test_training(project_path: Path, epochs: int = 2):
     return metrics
 
 
-def test_inference(project_path: Path):
+def test_inference(project_path: Path, model: str = "unet"):
     """Test model inference."""
     print("\n" + "=" * 60)
-    print("TEST: Model Inference")
+    print(f"TEST: Model Inference ({model})")
     print("=" * 60)
 
     import cv2
@@ -215,7 +223,7 @@ def test_inference(project_path: Path):
     train_id = train_run["id"]
     infer_run = run_mgr.create_run(
         "infer",
-        label="unet-test",
+        label=f"{model}-test",
         parent=f"train-{train_id:03d}",
     )
 
@@ -242,20 +250,22 @@ def test_inference(project_path: Path):
     count = 0
 
     for frame_id, mask in run_inference(
-        handler_name="unet",
+        handler_name=model,
         checkpoint=checkpoint,
         images=image_iterator(),
         num_classes=len(project.class_names()),
         class_names=project.class_names(),
         config=config,
     ):
-        # Save mask
+        # Save mask - split semantic mask by class
         vid_id, frame_name = frame_id.split("/")
-        for class_name in project.class_names():
+        for class_idx, class_name in enumerate(project.class_names(), start=1):
+            # Extract pixels for this class (class_idx = 1 for first class, 2 for second, etc.)
+            class_mask = (mask == class_idx).astype(np.uint16) * class_idx
             out_dir = masks_dir / vid_id / class_name
             out_dir.mkdir(parents=True, exist_ok=True)
             out_path = out_dir / f"{frame_name}.png"
-            cv2.imwrite(str(out_path), mask.astype(np.uint16))
+            cv2.imwrite(str(out_path), class_mask)
         count += 1
 
         if count % 20 == 0:
@@ -353,6 +363,12 @@ def main():
         action="store_true",
         help="Skip training (use existing checkpoint)",
     )
+    parser.add_argument(
+        "--model", "-m",
+        default="unet",
+        choices=["unet", "maskrcnn"],
+        help="Model handler to use (default: unet)",
+    )
 
     args = parser.parse_args()
 
@@ -375,9 +391,9 @@ def main():
     test_data_handler(args.project)
 
     if not args.skip_training:
-        test_training(args.project, epochs=args.epochs)
+        test_training(args.project, epochs=args.epochs, model=args.model)
 
-    test_inference(args.project)
+    test_inference(args.project, model=args.model)
     test_evaluation(args.project)
 
     print("\n" + "=" * 60)

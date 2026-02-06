@@ -387,53 +387,56 @@ class SAM2Long_pipeline(QWidget):
 
         anchor_set = set(anchors)
 
-        # Propagate through video
-        for frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
-            self.inference_state, reverse=False
-        ):
-            progress = int((frame_idx * 100) / nT)
-            self.mwo.video_propagation_progressBar.setValue(progress)
+        # Propagate forward and backward from anchors
+        for direction, reverse in [("forward", False), ("backward", True)]:
+            print(f"Propagating {direction}...")
+            for frame_idx, out_obj_ids, out_mask_logits in self.predictor.propagate_in_video(
+                self.inference_state, reverse=reverse
+            ):
+                # Progress: forward 0-50%, backward 50-100%
+                base = 0 if not reverse else 50
+                progress = base + int((frame_idx * 50) / nT)
+                self.mwo.video_propagation_progressBar.setValue(progress)
 
-            # Skip anchor frames if protecting
-            if config.protect_anchors and frame_idx in anchor_set:
-                continue
-
-            # Split SAM results by layer
-            for layer_name in self.initialized_layers:
-                layer = self.viewer.layers[layer_name]
-                layer_data = layer.data
-
-                # Create empty mask for this frame
-                if layer_data.ndim == 3:
-                    H, W = layer_data.shape[1], layer_data.shape[2]
-                elif layer_data.ndim == 4:
-                    H, W = layer_data.shape[2], layer_data.shape[3]
-                else:
+                # Skip anchor frames if protecting
+                if config.protect_anchors and frame_idx in anchor_set:
                     continue
 
-                frame_mask = np.zeros((H, W), dtype=np.int32)
+                # Split SAM results by layer
+                for layer_name in self.initialized_layers:
+                    layer = self.viewer.layers[layer_name]
+                    layer_data = layer.data
 
-                # Extract masks for this layer's objects
-                for i, sam_obj_id in enumerate(out_obj_ids):
-                    obj_layer_name, original_label_id = self._unmap_from_sam_obj_id(sam_obj_id)
-                    if obj_layer_name != layer_name:
-                        continue  # Skip objects from other layers
+                    # Create empty mask for this frame
+                    if layer_data.ndim == 3:
+                        H, W = layer_data.shape[1], layer_data.shape[2]
+                    elif layer_data.ndim == 4:
+                        H, W = layer_data.shape[2], layer_data.shape[3]
+                    else:
+                        continue
 
-                    # Get mask and apply threshold
-                    out_mask = (out_mask_logits[i] > config.prob_threshold).cpu().numpy()
-                    frame_mask[out_mask[0]] = original_label_id
+                    frame_mask = np.zeros((H, W), dtype=np.int32)
 
-                # Write to layer
-                if layer_data.ndim == 3:
-                    layer_data[frame_idx] = frame_mask
-                elif layer_data.ndim == 4:
-                    z = int(self.viewer.dims.current_step[1])
-                    layer_data[frame_idx, z] = frame_mask
+                    # Extract masks for this layer's objects
+                    for i, sam_obj_id in enumerate(out_obj_ids):
+                        obj_layer_name, original_label_id = self._unmap_from_sam_obj_id(sam_obj_id)
+                        if obj_layer_name != layer_name:
+                            continue
 
-                layer.data = layer_data
+                        out_mask = (out_mask_logits[i] > config.prob_threshold).cpu().numpy()
+                        frame_mask[out_mask[0]] = original_label_id
+
+                    # Write to layer
+                    if layer_data.ndim == 3:
+                        layer_data[frame_idx] = frame_mask
+                    elif layer_data.ndim == 4:
+                        z = int(self.viewer.dims.current_step[1])
+                        layer_data[frame_idx, z] = frame_mask
+
+                    layer.data = layer_data
 
         self.mwo.video_propagation_progressBar.setValue(100)
-        print("Propagation complete.")
+        print("Propagation complete (forward + backward).")
 
     # ========================================================================
     # Reset and Cleanup
@@ -451,6 +454,31 @@ class SAM2Long_pipeline(QWidget):
         self.prompts = {}  ### Empty prompts when resetting
         self.approved_frames.clear()  ### Clear approved frames on reset
         self.mwo.video_propagation_progressBar.setValue(0)
+
+    def reinitialize_for_video(self):
+        """Re-export frames and reinitialize SAM2 inference state for a new video."""
+        # Clean up old temp frames
+        self.delete_source_frame_dir()
+
+        # Export new video frames to temp dir
+        self.preprocess_volume()
+
+        # Reinitialize SAM2 inference state with new frames
+        self.inference_state = self.predictor.init_state(
+            video_path=self.source_frame_dir.as_posix()
+        )
+        self.inference_state["num_pathway"] = 3
+        self.inference_state["iou_thre"] = 0.3
+        self.inference_state["uncertainty"] = 1
+
+        # Clear all tracking state
+        self.prompts = {}
+        self.approved_frames.clear()
+        self.initialized_layers.clear()
+        self.obj_id_map.clear()
+        self._next_sam_obj_id = 1
+
+        print("SAM2 inference state reinitialized for new video.")
 
     def delete_source_frame_dir(self):
         """Deletes the temporary source frame directory"""

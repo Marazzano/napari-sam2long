@@ -87,12 +87,15 @@ class ExportCurationPanel(QWidget):
         """
         Rebuild the frame list for a new video.
 
+        Preserves any previously approved frames that are still within range.
+
         Args:
             total_frames: Number of frames in the current video layer.
                          Set to 0 to clear the list (no layer selected).
-
-        Default behavior: All frames approved for export.
         """
+        # Remember which frames were approved so we can restore them
+        previously_approved = set(self.export_frames)
+
         self.total_frames = total_frames
 
         # Block signals during rebuild to avoid triggering itemChanged
@@ -101,22 +104,20 @@ class ExportCurationPanel(QWidget):
         self.frame_items.clear()
 
         if total_frames == 0:
-            # No video loaded
             self.export_frames.clear()
             self.frame_list.blockSignals(False)
             self._update_status()
             return
 
-        # Create checkable items for each frame (default: none selected)
+        # Carry over approvals that are still in range
+        self.export_frames = {f for f in previously_approved if f < total_frames}
+
         for t in range(total_frames):
             item = QListWidgetItem(f"Frame {t}")
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Unchecked)
+            item.setCheckState(Qt.Checked if t in self.export_frames else Qt.Unchecked)
             self.frame_list.addItem(item)
             self.frame_items[t] = item
-
-        # Initialize export set with none selected
-        self.export_frames = set()
 
         self.frame_list.blockSignals(False)
         self._update_status()

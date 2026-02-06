@@ -132,8 +132,12 @@ class Detectron2Handler(BaseModelHandler):
         cfg.MODEL.ROI_HEADS.NUM_CLASSES = self.num_classes
         cfg.SOLVER.IMS_PER_BATCH = config.batch_size
         cfg.SOLVER.BASE_LR = config.learning_rate
-        cfg.SOLVER.MAX_ITER = config.epochs * 100  # Approximate iterations
-        cfg.SOLVER.CHECKPOINT_PERIOD = max(100, config.epochs * 10)
+
+        # Calculate iterations per epoch: num_images / batch_size
+        num_train_images = len(coco_data["images"])
+        iters_per_epoch = num_train_images // config.batch_size
+        cfg.SOLVER.MAX_ITER = config.epochs * iters_per_epoch
+        cfg.SOLVER.CHECKPOINT_PERIOD = max(iters_per_epoch, config.epochs * iters_per_epoch // 2)
 
         cfg.OUTPUT_DIR = str(checkpoint_dir.parent)  # Detectron2 creates its own structure
         cfg.MODEL.DEVICE = self._get_device(config.device)
@@ -145,6 +149,10 @@ class Detectron2Handler(BaseModelHandler):
         cfg.INPUT.MAX_SIZE_TEST = config.img_size[0]
 
         self.cfg = cfg
+
+        # Use bitmask format for RLE-encoded masks (not polygons)
+        from detectron2.data import DatasetMapper
+        cfg.INPUT.MASK_FORMAT = "bitmask"
 
         # Train
         trainer = DefaultTrainer(cfg)
@@ -164,10 +172,26 @@ class Detectron2Handler(BaseModelHandler):
         except Exception:
             pass  # Datasets may already be unregistered or never registered
 
+        # Get final training loss from event storage
+        final_loss = 0.0
+        try:
+            # Detectron2 stores metrics in EventStorage
+            # storage.latest() returns (value, iteration) tuples
+            if hasattr(trainer, 'storage') and trainer.storage:
+                loss_data = trainer.storage.latest().get("total_loss", (0.0, 0))
+                # Extract the value (first element of tuple)
+                final_loss = loss_data[0] if isinstance(loss_data, tuple) else loss_data
+        except Exception as e:
+            print(f"Warning: Could not retrieve final loss: {e}")
+            final_loss = 0.0
+
         return {
             "final_epoch": config.epochs,
             "best_checkpoint": str(checkpoint_dir / "best.pth"),
             "output_dir": cfg.OUTPUT_DIR,
+            "best_val_loss": float(final_loss),
+            "final_val_iou": 0.0,
+            "train_loss": float(final_loss),
         }
 
     def predict(
@@ -192,16 +216,26 @@ class Detectron2Handler(BaseModelHandler):
             h, w = img.shape[:2]
             mask = np.zeros((h, w), dtype=np.uint16)
 
+            # Debug: print detection info for first frame
+            if frame_id.endswith("frame_00000"):
+                print(f"DEBUG {frame_id}: Detected {len(instances)} instances")
+                if len(instances) > 0:
+                    print(f"  Scores: {instances.scores.numpy()}")
+                    print(f"  Classes: {instances.pred_classes.numpy()}")
+                    print(f"  Threshold: {threshold}")
+
             if len(instances) > 0:
                 pred_masks = instances.pred_masks.numpy()
+                pred_classes = instances.pred_classes.numpy()
                 scores = instances.scores.numpy()
 
-                # Assign instance IDs to pixels
-                instance_id = 0
-                for m, score in zip(pred_masks, scores):
+                # Merge instances into semantic segmentation
+                # Each pixel gets the class ID (1=head, 2=yolk, etc.)
+                for m, cls, score in zip(pred_masks, pred_classes, scores):
                     if score >= threshold:
-                        instance_id += 1
-                        mask[m] = instance_id
+                        # cls is 0-indexed, add 1 to match COCO class IDs
+                        class_id = int(cls) + 1
+                        mask[m] = class_id
 
             yield frame_id, mask
 

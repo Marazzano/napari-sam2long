@@ -12,6 +12,8 @@ from qtpy import uic
 from qtpy.QtWidgets import (
     QApplication,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QGroupBox,
     QHBoxLayout,
@@ -105,6 +107,17 @@ class SAM2Long(QWidget):
         # ====================================================================
         self._setup_anchor_ui()
         self._setup_export_curation_ui()
+        self._setup_keybindings()
+
+    def _setup_keybindings(self):
+        """Register keyboard shortcuts."""
+        @self.viewer.bind_key("a")
+        def _approve_frame(viewer):
+            self.approve_frame_for_export()
+
+        @self.viewer.bind_key("Shift-A")
+        def _unapprove_frame(viewer):
+            self.unapprove_frame_for_export()
 
     def _setup_project_manager_ui(self):
         """Set up the Project Manager UI section at the top."""
@@ -113,12 +126,19 @@ class SAM2Long(QWidget):
         project_layout = QVBoxLayout()
         project_group.setLayout(project_layout)
 
-        # Row 1: Load project button
+        # Row 1: Load project and load run buttons
         load_row = QHBoxLayout()
         self.load_project_btn = QPushButton("Load Project...")
         self.load_project_btn.setToolTip("Load an organized project folder")
         self.load_project_btn.clicked.connect(self.load_project_folder)
         load_row.addWidget(self.load_project_btn)
+
+        self.load_run_btn = QPushButton("Load Run Masks...")
+        self.load_run_btn.setEnabled(False)
+        self.load_run_btn.setToolTip("Load masks from an annotation or inference run")
+        self.load_run_btn.clicked.connect(self.load_run_masks)
+        load_row.addWidget(self.load_run_btn)
+
         project_layout.addLayout(load_row)
 
         # Row 2: Project info display
@@ -156,49 +176,23 @@ class SAM2Long(QWidget):
             main_layout.insertWidget(0, project_group)
 
     def _setup_anchor_ui(self):
-        """Set up the UI elements for multi-anchor frame management."""
-        # Create grouped container for anchor controls
+        """Set up the UI elements for anchor management and frame approval."""
+        main_layout = self.layout()
+
+        # ── Group 1: Anchor Frame Management ──
         anchor_group = QGroupBox("Anchor Frame Management")
         anchor_layout = QVBoxLayout()
         anchor_group.setLayout(anchor_layout)
 
-        # Button row 1: Add/Remove Anchor
+        # Row 1: Add/Remove Anchor
         button_row1 = QHBoxLayout()
         self.approve_btn = QPushButton("Add Anchor")
         self.approve_btn.setToolTip("Mark current frame as anchor for propagation")
-
         self.unapprove_btn = QPushButton("Remove Anchor")
         self.unapprove_btn.setToolTip("Remove current frame from anchors")
-
         button_row1.addWidget(self.approve_btn)
         button_row1.addWidget(self.unapprove_btn)
         anchor_layout.addLayout(button_row1)
-
-        # Button row 1b: Approve/Unapprove frame for export
-        approve_row = QHBoxLayout()
-        self.approve_frame_btn = QPushButton("Approve Frame")
-        self.approve_frame_btn.setToolTip("Approve current frame for export")
-        self.approve_frame_btn.setStyleSheet("background-color: #4CAF50; color: white;")
-
-        self.unapprove_frame_btn = QPushButton("Unapprove Frame")
-        self.unapprove_frame_btn.setToolTip("Remove current frame from export approval")
-
-        approve_row.addWidget(self.approve_frame_btn)
-        approve_row.addWidget(self.unapprove_frame_btn)
-        anchor_layout.addLayout(approve_row)
-
-        # Button row 2: Clear anchors and clear current frame
-        button_row2 = QHBoxLayout()
-        self.clear_approved_btn = QPushButton("Clear All Anchors")
-        self.clear_approved_btn.setToolTip("Clear all approved anchor frames")
-
-        self.clear_frame_btn = QPushButton("Clear Current Frame")
-        self.clear_frame_btn.setToolTip("Clear masks on current frame only (for redrawing)")
-        self.clear_frame_btn.setStyleSheet("background-color: #f44336; color: white;")
-
-        button_row2.addWidget(self.clear_approved_btn)
-        button_row2.addWidget(self.clear_frame_btn)
-        anchor_layout.addLayout(button_row2)
 
         # Approved frames display
         self.approved_list_label = QLabel("Anchors: []")
@@ -206,10 +200,43 @@ class SAM2Long(QWidget):
         self.approved_list_label.setStyleSheet("font-size: 9pt;")
         anchor_layout.addWidget(self.approved_list_label)
 
-        # Status HUD
+        # Row 2: Clear All Anchors / Clear Current Frame
+        button_row2 = QHBoxLayout()
+        self.clear_approved_btn = QPushButton("Clear All Anchors")
+        self.clear_approved_btn.setToolTip("Clear all approved anchor frames")
+        self.clear_frame_btn = QPushButton("Clear Current Frame")
+        self.clear_frame_btn.setToolTip("Clear masks on current frame only (for redrawing)")
+        self.clear_frame_btn.setStyleSheet("background-color: #f44336; color: white;")
+        button_row2.addWidget(self.clear_approved_btn)
+        button_row2.addWidget(self.clear_frame_btn)
+        anchor_layout.addLayout(button_row2)
+
+        # ── Group 2: Frame Approval ──
+        approval_group = QGroupBox("Frame Approval")
+        approval_layout = QVBoxLayout()
+        approval_group.setLayout(approval_layout)
+
+        # Approve/Unapprove frame for export
+        approve_row = QHBoxLayout()
+        self.approve_frame_btn = QPushButton("Approve Frame")
+        self.approve_frame_btn.setToolTip("Approve current frame for export")
+        self.approve_frame_btn.setStyleSheet("background-color: #4CAF50; color: white;")
+        self.unapprove_frame_btn = QPushButton("Unapprove Frame")
+        self.unapprove_frame_btn.setToolTip("Remove current frame from export approval")
+        approve_row.addWidget(self.approve_frame_btn)
+        approve_row.addWidget(self.unapprove_frame_btn)
+        approval_layout.addLayout(approve_row)
+
+        # Export Frames... button (opens config dialog)
+        self.configure_export_btn = QPushButton("Export Frames...")
+        self.configure_export_btn.setToolTip("Open frame selection for export configuration")
+        self.configure_export_btn.clicked.connect(self.open_export_config)
+        approval_layout.addWidget(self.configure_export_btn)
+
+        # Status HUD (shared across both groups)
         self.status_hud = QLabel("Layer: - | Label: - | Frame: -")
         self.status_hud.setStyleSheet("font-family: monospace; color: #888; font-size: 9pt;")
-        anchor_layout.addWidget(self.status_hud)
+        approval_layout.addWidget(self.status_hud)
 
         # Connect buttons
         self.approve_btn.clicked.connect(self.approve_current_frame)
@@ -222,13 +249,14 @@ class SAM2Long(QWidget):
         # Connect frame change to update status HUD
         self.viewer.dims.events.current_step.connect(self.update_status_hud)
 
-        # Insert anchor controls into the main layout
-        main_layout = self.layout()
+        # Insert both groups into main layout
         if main_layout is not None:
             main_layout.insertWidget(main_layout.count() - 1, anchor_group)
+            main_layout.insertWidget(main_layout.count() - 1, approval_group)
         else:
             fallback_layout = QVBoxLayout(self)
             fallback_layout.addWidget(anchor_group)
+            fallback_layout.addWidget(approval_group)
 
     def approve_current_frame(self):
         """Approve the current frame as an anchor for propagation."""
@@ -404,13 +432,7 @@ class SAM2Long(QWidget):
 
         export_layout.addLayout(export_actions)
 
-        # Row 2: Configure export button (settings)
-        self.configure_export_btn = QPushButton("Export Frames...")
-        self.configure_export_btn.setToolTip("Open frame selection for export configuration")
-        self.configure_export_btn.clicked.connect(self.open_export_config)
-        export_layout.addWidget(self.configure_export_btn)
-
-        # Row 3: Project-level export
+        # Row 2: Project-level export
         self.export_project_btn = QPushButton("Export Entire Project (COCO)")
         self.export_project_btn.setEnabled(False)
         self.export_project_btn.setToolTip(
@@ -722,13 +744,15 @@ class SAM2Long(QWidget):
             # Enable navigation buttons
             self.update_navigation_buttons()
 
-            # Enable export button
+            # Enable export and run buttons
             if hasattr(self, 'export_coco_btn'):
                 self.export_coco_btn.setEnabled(True)
             if hasattr(self, 'export_complete_btn'):
                 self.export_complete_btn.setEnabled(True)
             if hasattr(self, 'export_project_btn'):
                 self.export_project_btn.setEnabled(True)
+            if hasattr(self, 'load_run_btn'):
+                self.load_run_btn.setEnabled(True)
 
             show_info(f"Loaded project: {project_name}")
 
@@ -756,6 +780,9 @@ class SAM2Long(QWidget):
         if hasattr(self, "pipeline_object"):
             self.pipeline_object.clear_approved_frames()
             self.update_approved_display()
+
+        # Note: SAM2 inference state will be reinitialized after layers are loaded
+        self._needs_pipeline_reinit = True
 
         self.current_video_id = video_ids[self.current_video_index]
 
@@ -794,6 +821,14 @@ class SAM2Long(QWidget):
         # Update export frame list
         self.update_export_frame_list()
 
+        # Reinitialize SAM2 for the new video's frames
+        if getattr(self, '_needs_pipeline_reinit', False) and hasattr(self, 'pipeline_object'):
+            try:
+                self.pipeline_object.reinitialize_for_video()
+            except Exception as e:
+                print(f"Warning: Could not reinitialize SAM2 pipeline: {e}")
+            self._needs_pipeline_reinit = False
+
         # Track for saving later
         self._previous_video_id = self.current_video_id
 
@@ -825,6 +860,113 @@ class SAM2Long(QWidget):
         if self.current_project is None or self.current_video_id is None:
             return
         self._save_masks_for_video(self.current_video_id)
+
+    def load_run_masks(self):
+        """Load masks from an annotation or inference run into the current video."""
+        if self.current_project is None:
+            show_info("No project loaded")
+            return
+
+        from .ingestion import RunManager
+
+        # Get list of available runs
+        run_mgr = RunManager(self.current_project.root)
+        all_runs = run_mgr.list_runs()
+
+        if not all_runs:
+            show_info("No runs found in project")
+            return
+
+        # Create selection dialog with list widget
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Select Run to Load")
+        dialog.setMinimumWidth(500)
+        dialog.setMinimumHeight(300)
+
+        layout = QVBoxLayout(dialog)
+
+        # Instruction label
+        label = QLabel("Choose a run to load masks from:")
+        layout.addWidget(label)
+
+        # Scrollable list of runs
+        run_list = QListWidget()
+        run_list.setSelectionMode(QListWidget.SingleSelection)
+
+        for run in all_runs:
+            created = run.get('created_at', 'unknown')[:10]  # Just the date
+            item_text = f"{run['name']} ({run['type']}) - {created}"
+            item = QListWidgetItem(item_text)
+            item.setData(Qt.UserRole, run)  # Store run data
+            run_list.addItem(item)
+
+        layout.addWidget(run_list)
+
+        # Buttons
+        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        # Show dialog
+        if dialog.exec_() != QDialog.Accepted:
+            return
+
+        # Get selected run
+        selected_items = run_list.selectedItems()
+        if not selected_items:
+            return
+
+        selected_run = selected_items[0].data(Qt.UserRole)
+
+        # Load masks from selected run
+        try:
+            run_type = selected_run['type']
+            run_id = selected_run['id']
+
+            # Copy masks from run to current video's working directory
+            run_masks_dir = run_mgr.get_masks_dir(run_type, run_id, self.current_video_id)
+
+            if not run_masks_dir.exists():
+                show_info(f"No masks found for current video in {selected_run['name']}")
+                return
+
+            # Load masks into current label layers
+            metadata = self.current_project.load_metadata(self.current_video_id)
+
+            for class_name in self.current_project.class_names():
+                class_masks_dir = run_masks_dir / class_name
+                if not class_masks_dir.exists():
+                    continue
+
+                # Get the label layer
+                try:
+                    layer = self.viewer.layers[class_name]
+                    if not isinstance(layer, napari.layers.Labels):
+                        continue
+                except KeyError:
+                    continue
+
+                # Load each frame
+                for frame_info in metadata["frames"]:
+                    seq_idx = frame_info["seq"]
+                    filename = frame_info["file"]
+                    frame_stem = filename.rsplit(".", 1)[0]
+                    mask_path = class_masks_dir / f"{frame_stem}.png"
+
+                    if mask_path.exists():
+                        try:
+                            mask = read_indexed_mask(mask_path)
+                            layer.data[seq_idx] = mask
+                        except Exception as e:
+                            print(f"Warning: Could not load {mask_path}: {e}")
+
+                layer.refresh()
+
+            show_info(f"Loaded masks from {selected_run['name']}")
+
+        except Exception as e:
+            show_info(f"Error loading run masks: {str(e)}")
 
     def _save_masks_for_video(self, video_id):
         """Save masks for a specific video ID."""
@@ -951,7 +1093,7 @@ class SAM2Long(QWidget):
             self.current_video_index += 1
             self.load_current_video()
         else:
-            show_info("All videos completed!")
+            self._show_all_complete_dialog()
 
         self.update_navigation_buttons()
 
@@ -962,6 +1104,27 @@ class SAM2Long(QWidget):
             f"Project: {project_name} | Videos: {stats['total']} "
             f"(Pending: {stats['pending']}, Completed: {stats['completed']})"
         )
+
+    def _show_all_complete_dialog(self):
+        """Show dialog when all videos are completed, prompting next step."""
+        stats = self.current_project.stats() if self.current_project else {}
+        total = stats.get("total", 0)
+
+        reply = QMessageBox.information(
+            self,
+            "All Videos Completed!",
+            f"All {total} videos have been annotated.\n\n"
+            "Next step: Export to COCO and start training.\n\n"
+            "Click 'Export Entire Project (COCO)' to export all masks, "
+            "then use the Run Manager to launch UNet fine-tuning.",
+            QMessageBox.Ok,
+        )
+
+        # Highlight the export button
+        if hasattr(self, "export_project_btn"):
+            self.export_project_btn.setStyleSheet(
+                "background-color: #FF9800; color: white; font-weight: bold; padding: 8px;"
+            )
 
     def _check_has_masks(self):
         """Check if any label layers have non-zero masks."""
@@ -1085,7 +1248,7 @@ class SAM2Long(QWidget):
                 self.current_video_index += 1
                 self.load_current_video()
             else:
-                show_info("All videos completed!")
+                self._show_all_complete_dialog()
 
             self.update_navigation_buttons()
 

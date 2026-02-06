@@ -85,3 +85,7 @@ venv/
 
 # Model checkpoints
 sam2.1*.pt
+
+# Test/project data
+embryo_project/
+test_davis_project/
