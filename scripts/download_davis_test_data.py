@@ -136,19 +136,15 @@ def convert_davis_to_project(
             dst_image = images_dir / f"frame_{seq_idx:05d}.jpg"
             shutil.copy(frame_file, dst_image)
 
-            # Convert and copy mask (DAVIS uses colored PNGs, we need indexed)
+            # Convert and copy mask (DAVIS uses palette-indexed PNGs)
             mask_file = anno_dir / frame_file.with_suffix(".png").name
             if mask_file.exists():
-                # Read DAVIS mask (palette-based PNG)
-                mask = cv2.imread(str(mask_file), cv2.IMREAD_UNCHANGED)
-                if mask is not None:
-                    # DAVIS masks: 0 = background, other values = object IDs
-                    # Already indexed, just need to ensure uint8/uint16
-                    if len(mask.shape) == 3:
-                        mask = mask[:, :, 0]  # Take first channel
-                    mask = mask.astype(np.uint16)
-                    dst_mask = masks_dir / f"frame_{seq_idx:05d}.png"
-                    cv2.imwrite(str(dst_mask), mask)
+                # Use PIL to read palette-indexed PNG correctly
+                from PIL import Image
+                pil_mask = Image.open(mask_file)
+                mask = np.array(pil_mask).astype(np.uint16)
+                dst_mask = masks_dir / f"frame_{seq_idx:05d}.png"
+                cv2.imwrite(str(dst_mask), mask)
 
             frames_meta.append({
                 "seq": seq_idx,

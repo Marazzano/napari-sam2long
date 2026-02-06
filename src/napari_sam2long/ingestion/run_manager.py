@@ -214,13 +214,16 @@ class RunManager:
             if run["id"] == run_id:
                 manifest_path = run["path"] / "manifest.json"
                 if manifest_path.exists():
-                    return json.loads(manifest_path.read_text())
+                    data = json.loads(manifest_path.read_text())
+                    data["_path"] = str(run["path"])
+                    return data
                 else:
                     # Return basic info if manifest missing
                     return {
                         "id": run_id,
                         "type": run_type,
                         "name": run["name"],
+                        "_path": str(run["path"]),
                     }
         raise FileNotFoundError(f"Run not found: {run_type}_{run_id:03d}")
 
