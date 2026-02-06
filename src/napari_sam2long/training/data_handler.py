@@ -102,9 +102,12 @@ class SplitManager:
         random.Random(seed).shuffle(shuffled)
 
         n_val = max(1, int(len(shuffled) * val_ratio))
+        # If only one video, use it for both train and val
+        if len(shuffled) == 1:
+            n_val = 0
         split = {
-            "train": shuffled[n_val:],
-            "val": shuffled[:n_val],
+            "train": shuffled[n_val:] if len(shuffled) > 1 else shuffled,
+            "val": shuffled[:n_val] if len(shuffled) > 1 else shuffled,
             "created_at": datetime.now().isoformat(),
             "val_ratio": val_ratio,
             "seed": seed,
@@ -213,11 +216,15 @@ class TrainingDataHandler:
                         if image_path is None:
                             continue
 
-                        # Extract frame index from filename
+                        # Extract frame index from filename (e.g., "frame_00000" or "00000")
                         try:
+                            # Try last numeric segment after underscore
                             frame_idx = int(frame_stem.split("_")[-1])
                         except (IndexError, ValueError):
-                            frame_idx = 0
+                            # Fall back to extracting any digits from the stem
+                            import re
+                            digits = re.findall(r'\d+', frame_stem)
+                            frame_idx = int(digits[-1]) if digits else 0
 
                         samples.append(TrainingSample(
                             image_path=image_path,

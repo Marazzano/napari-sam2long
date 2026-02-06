@@ -17,10 +17,8 @@ The script will:
 
 import argparse
 import json
-import os
 import shutil
 import sys
-import tempfile
 import zipfile
 from pathlib import Path
 from datetime import datetime, timezone

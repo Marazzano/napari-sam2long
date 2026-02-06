@@ -333,13 +333,21 @@ class SMPHandler(BaseModelHandler):
 
                 yield frame_id, pred
 
-    def load_checkpoint(self, path: Path):
-        """Load model weights from checkpoint."""
-        if self.model is None:
-            # Build with default config if not yet built
-            self._build_model(TrainConfig())
+    def load_checkpoint(self, path: Path, config: TrainConfig = None):
+        """Load model weights from checkpoint.
 
-        state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        Args:
+            path: Path to checkpoint file
+            config: Training config (required if model not yet built)
+        """
+        if self.model is None:
+            self._build_model(config or TrainConfig())
+
+        try:
+            state_dict = torch.load(path, map_location="cpu", weights_only=True)
+        except TypeError:
+            # Older PyTorch versions don't support weights_only
+            state_dict = torch.load(path, map_location="cpu")
         self.model.load_state_dict(state_dict)
 
     def save_checkpoint(self, path: Path):

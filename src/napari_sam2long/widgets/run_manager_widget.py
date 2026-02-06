@@ -347,7 +347,11 @@ class TrainingConfigDialog(QDialog):
         form = QFormLayout()
 
         self.model_combo = QComboBox()
-        self.model_combo.addItems(["unet", "maskrcnn"])
+        try:
+            from ..training.handlers import list_handlers
+            self.model_combo.addItems(list_handlers())
+        except ImportError:
+            self.model_combo.addItems(["unet", "maskrcnn"])
         form.addRow("Model:", self.model_combo)
 
         self.epochs_spin = QSpinBox()

@@ -78,11 +78,19 @@ class Detectron2Handler(BaseModelHandler):
             coco_data = json.load(f)
 
         if coco_data["images"]:
-            # Images have absolute paths in file_name
-            first_img = coco_data["images"][0]["file_name"]
-            img_dir = str(Path(first_img).parent)
+            # Images may come from multiple directories; use common parent
+            img_dirs = set(
+                str(Path(img["file_name"]).parent)
+                for img in coco_data["images"]
+            )
+            if len(img_dirs) == 1:
+                img_dir = img_dirs.pop()
+            else:
+                # Multiple image directories; use the common ancestor
+                from os.path import commonpath
+                img_dir = commonpath(list(img_dirs))
         else:
-            img_dir = ""
+            raise ValueError("No images found in training COCO JSON")
 
         # Register datasets with unique names (avoid conflicts)
         import uuid
@@ -154,7 +162,7 @@ class Detectron2Handler(BaseModelHandler):
             DatasetCatalog.remove(self._train_dataset_name)
             DatasetCatalog.remove(self._val_dataset_name)
         except Exception:
-            pass
+            pass  # Datasets may already be unregistered or never registered
 
         return {
             "final_epoch": config.epochs,

@@ -1,5 +1,9 @@
 # Multi-Model Active Learning Architecture Proposal
 
+> **Status: PROPOSED** — This document describes the planned architecture.
+> The implementation uses "handlers" (not "models") as the abstraction for
+> pluggable model backends. See `src/napari_sam2long/training/handlers/`.
+
 ## Executive Summary
 
 This document proposes an architecture to extend napari-sam2long into a **multi-model active learning platform**. The core loop:
