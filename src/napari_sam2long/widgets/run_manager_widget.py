@@ -24,13 +24,11 @@ from qtpy.QtWidgets import (
     QListWidgetItem,
     QDialog,
     QDialogButtonBox,
-    QLineEdit,
     QSpinBox,
     QDoubleSpinBox,
     QFormLayout,
     QTextEdit,
     QMessageBox,
-    QProgressDialog,
     QInputDialog,
 )
 from qtpy.QtCore import Qt, Signal
@@ -49,7 +47,7 @@ class RunManagerWidget(QWidget):
     """
 
     run_loaded = Signal(str, int)  # (run_type, run_id)
-    training_requested = Signal(list)  # [(run_type, run_id), ...]
+    training_requested = Signal(list, dict)  # ([(run_type, run_id), ...], config)
     inference_requested = Signal(int)  # train_run_id
 
     def __init__(self, parent=None):
@@ -300,7 +298,7 @@ class RunManagerWidget(QWidget):
         dialog = TrainingConfigDialog(self, run_type, run_id)
         if dialog.exec_():
             config = dialog.get_config()
-            self.training_requested.emit([(run_type, run_id)])
+            self.training_requested.emit([(run_type, run_id)], config)
 
     def _start_inference_dialog(self):
         """Open inference configuration dialog."""

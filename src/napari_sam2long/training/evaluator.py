@@ -101,8 +101,9 @@ def compute_iou(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float:
     intersection = np.logical_and(pred_mask, gt_mask).sum()
     union = np.logical_or(pred_mask, gt_mask).sum()
 
+    # When both masks are empty, they perfectly agree (return 1.0)
     if union == 0:
-        return 0.0
+        return 1.0
 
     return float(intersection) / float(union)
 
@@ -121,8 +122,9 @@ def compute_dice(pred_mask: np.ndarray, gt_mask: np.ndarray) -> float:
     intersection = np.logical_and(pred_mask, gt_mask).sum()
     sum_masks = pred_mask.sum() + gt_mask.sum()
 
+    # When both masks are empty, they perfectly agree (return 1.0)
     if sum_masks == 0:
-        return 0.0
+        return 1.0
 
     return float(2 * intersection) / float(sum_masks)
 
